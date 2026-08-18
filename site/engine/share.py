@@ -146,17 +146,24 @@ def build_share(rows: list[dict], closed_month: int = 7) -> dict:
             }
         )
 
+    cash_to_masha = sum(x["amount"] for x in data["cash_from_sasha"])
     sasha = next((x["amount"] for x in data["savings"] if x["owner"] == "Саша"), 0)
-    masha = next((x["amount"] for x in data["savings"] if x["owner"] == "Маша"), 0)
+    masha_own = next((x["amount"] for x in data["savings"] if x["owner"] == "Маша"), 0)
+    masha = masha_own + cash_to_masha
     known_prop = sum(v or 0 for v in values.values())
 
     return {
         "source": data["source"],
-        "savings": data["savings"],
+        "savings": [
+            {"owner": "Саша", "label": "Саша накопления", "amount": sasha},
+            {"owner": "Маша", "label": "Маша: накопления + наличные от Саши", "amount": masha},
+        ],
         "cash_from_sasha": data["cash_from_sasha"],
         "property": list(grouped.values()),
         "totals": {
             "sasha_cash": sasha,
+            "masha_own": masha_own,
+            "cash_from_sasha": cash_to_masha,
             "masha_cash": masha,
             "cash": sasha + masha,
             "property_known": known_prop,

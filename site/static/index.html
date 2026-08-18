@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0c10" />
   <title>Sasha &amp; Masha | Мониторинг бюджета</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,21 +16,26 @@
 </head>
 <body>
   <div class="shell" id="shell">
-    <header class="top">
+    <header class="site-chrome">
       <div class="brand">
-        <span class="brand-kicker">семейный FCF · 2026</span>
-        <h1>Sasha &amp; Masha</h1>
+        <span class="logo">Sasha <em>&amp;</em> Masha</span>
+        <span class="brand-rest"><span class="brand-sep">|</span> <span class="brand-page">Мониторинг бюджета</span></span>
       </div>
-      <p class="period" id="analytics-period"></p>
-      <div class="top-right">
+      <div class="chrome-actions">
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Переключить тему">Светлая</button>
-        <nav class="tabs">
-          <button class="tab active" data-view="analytics">Аналитика</button>
-          <button class="tab" data-view="share">Вклад</button>
-          <button class="tab" data-view="data">Данные</button>
-        </nav>
+        <a class="home-link" href="https://mariasedovav.github.io/sasha-masha/" aria-label="На главную">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 11.2 12 4.8l7.5 6.4V20a1 1 0 0 1-1 1h-5.2v-6.2H10.7V21H5.5a1 1 0 0 1-1-1v-8.8Z"/></svg>
+        </a>
       </div>
     </header>
+    <div class="subbar">
+      <p class="period" id="analytics-period"></p>
+      <nav class="tabs">
+        <button class="tab active" data-view="analytics">Аналитика</button>
+        <button class="tab" data-view="share">Вклад</button>
+        <button class="tab" data-view="data">Данные</button>
+      </nav>
+    </div>
 
     <section id="view-analytics" class="view dash">
       <div class="ticker" id="markets"></div>
@@ -100,7 +106,7 @@
           <div class="panel-head">
             <div>
               <h2>Недвижимость</h2>
-              <p class="hint">вкладка «Разделение_недвижимость» · стоимость — оплаченный факт</p>
+              <p class="hint">вкладка «Разделение_недвижимость» · доли собственников</p>
             </div>
             <div class="kpi-mini" id="share-prop-kpis"></div>
           </div>

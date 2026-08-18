@@ -31,6 +31,8 @@ function applyTheme(theme) {
   localStorage.setItem("sasha-theme", theme);
   const btn = $("theme-toggle");
   if (btn) btn.textContent = theme === "light" ? "Тёмная" : "Светлая";
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", theme === "light" ? "#f3eee4" : "#0b0c10");
   if (state.analytics) {
     paintCumul();
     paintSlice();
@@ -600,15 +602,17 @@ function paintShare() {
   const data = state.share;
   if (!data) return;
   $("share-source").textContent = data.source
-    ? `Источник: ${data.source}. Петербург без оценки стоимости — в Excel её нет.`
+    ? `Источник: ${data.source}. Наличные от Саши входят в долю Маши.`
     : "";
   $("share-cash-kpis").innerHTML = [
     `<div class="chip-kpi"><b>${mln(data.totals.sasha_cash)}</b><span>Саша</span></div>`,
-    `<div class="chip-kpi"><b>${mln(data.totals.masha_cash)}</b><span>Маша</span></div>`,
+    `<div class="chip-kpi"><b>${mln(data.totals.masha_cash)}</b><span>Маша с наличными</span></div>`,
     `<div class="chip-kpi"><b>${mln(data.totals.cash)}</b><span>вместе</span></div>`,
   ].join("");
   $("share-prop-kpis").innerHTML = [
-    `<div class="chip-kpi"><b>${mln(data.totals.property_known)}</b><span>оценка по факту оплаты</span></div>`,
+    `<div class="chip-kpi"><b>50 / 50</b><span>Таиланд</span></div>`,
+    `<div class="chip-kpi"><b>Саша</b><span>Петербург 100%</span></div>`,
+    `<div class="chip-kpi"><b>Маша</b><span>паркинг 100%</span></div>`,
   ].join("");
 
   const sasha = cssVar("--gold");
@@ -617,10 +621,10 @@ function paintShare() {
   paintChart("chart-savings", {
     type: "doughnut",
     data: {
-      labels: data.savings.map((s) => s.owner),
+      labels: ["Саша", "Маша"],
       datasets: [{
-        data: data.savings.map((s) => s.amount),
-        backgroundColor: data.savings.map((s) => s.owner === "Саша" ? sasha : masha),
+        data: [data.totals.sasha_cash, data.totals.masha_cash],
+        backgroundColor: [sasha, masha],
         borderWidth: 0,
       }],
     },
@@ -633,15 +637,44 @@ function paintShare() {
     },
   });
 
+  const cashSum = data.totals.cash_from_sasha || 0;
   $("cash-from-sasha").innerHTML =
-    "<h3>Наличные Маши от Саши</h3>" +
+    "<h3>Как сложилась доля Маши</h3>" +
+    `<div class="share-row"><span>Маша накопления</span><b>${money(data.totals.masha_own || 0)}</b></div>` +
+    `<div class="share-row"><span>Наличные от Саши, сумма лет</span><b>${money(cashSum)}</b></div>` +
+    `<div class="share-row"><span>Итого Маша</span><b>${money(data.totals.masha_cash)}</b></div>` +
+    "<h3>Наличные Маши от Саши по годам</h3>" +
     data.cash_from_sasha.map((r) =>
       `<div class="share-row"><span>${r.year || ""}</span><b>${money(r.amount)}</b><span class="conf">${r.comment || ""}</span></div>`
     ).join("");
 
-  const labels = data.property.map((p) => p.name.replace("Квартира ", ""));
+  const labels = data.property.map((p) => p.name.replace("Квартира ", "").replace("Парковочное место", "Паркинг"));
+  const onSasha = cssVar("--on-accent");
+  const onMasha = cssVar("--l2-on");
   paintChart("chart-property", {
     type: "bar",
+    plugins: [{
+      id: "barPctLabels",
+      afterDatasetsDraw(chart) {
+        const { ctx } = chart;
+        ctx.save();
+        ctx.font = "600 13px Montserrat, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        chart.data.datasets.forEach((ds, di) => {
+          const meta = chart.getDatasetMeta(di);
+          if (meta.hidden) return;
+          ctx.fillStyle = di === 0 ? onSasha : onMasha;
+          meta.data.forEach((el, i) => {
+            const v = ds.data[i];
+            if (!v) return;
+            const { x, y, base } = el.getProps(["x", "y", "base"], true);
+            ctx.fillText(`${v}%`, x, (y + base) / 2);
+          });
+        });
+        ctx.restore();
+      },
+    }],
     data: {
       labels,
       datasets: [
@@ -649,7 +682,7 @@ function paintShare() {
           label: "Саша",
           data: data.property.map((p) => {
             const row = p.shares.find((s) => s.owner === "Саша");
-            return row && row.value != null ? row.value / 1e6 : 0;
+            return row ? Math.round(row.share * 100) : 0;
           }),
           backgroundColor: sasha,
           borderRadius: 4,
@@ -658,7 +691,7 @@ function paintShare() {
           label: "Маша",
           data: data.property.map((p) => {
             const row = p.shares.find((s) => s.owner === "Маша");
-            return row && row.value != null ? row.value / 1e6 : 0;
+            return row ? Math.round(row.share * 100) : 0;
           }),
           backgroundColor: masha,
           borderRadius: 4,
@@ -671,14 +704,7 @@ function paintShare() {
         legend: { position: "bottom", labels: { boxWidth: 10 } },
         tooltip: {
           callbacks: {
-            label: (ctx) => {
-              const p = data.property[ctx.dataIndex];
-              const owner = ctx.dataset.label;
-              const row = p.shares.find((s) => s.owner === owner);
-              if (!row) return owner;
-              const share = Math.round(row.share * 100) + "%";
-              return row.value == null ? `${owner}: ${share}, нет оценки` : `${owner}: ${share}, ${money(row.value)}`;
-            },
+            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}%`,
           },
         },
       },
@@ -686,7 +712,10 @@ function paintShare() {
         x: { stacked: true, grid: { display: false } },
         y: {
           stacked: true,
-          title: { display: true, text: "млн ₽", color: cssVar("--muted") },
+          min: 0,
+          max: 100,
+          title: { display: true, text: "%", color: cssVar("--muted") },
+          ticks: { callback: (v) => v + "%" },
           grid: { color: currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)" },
         },
       },
@@ -695,8 +724,7 @@ function paintShare() {
 
   $("property-table").innerHTML = data.property.map((p) => {
     const shares = p.shares.map((s) => `${s.owner} ${Math.round(s.share * 100)}%`).join(" · ");
-    const val = p.value == null ? "нет оценки" : money(p.value);
-    return `<div class="share-row"><span>${p.name}</span><b>${val}</b><span class="conf">${shares}</span></div>`;
+    return `<div class="share-row"><span>${p.name}</span><b>${shares}</b></div>`;
   }).join("");
 }
 
