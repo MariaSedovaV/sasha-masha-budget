@@ -94,6 +94,22 @@ async function api(path, opts) {
   throw last;
 }
 
+function applyVoiceAddsToLedger(ledger) {
+  if (!ledger) return ledger;
+  let adds = [];
+  try { adds = JSON.parse(localStorage.getItem("sasha-masha-budget-adds") || "[]"); } catch {}
+  if (!Array.isArray(adds) || !adds.length) return ledger;
+  const rows = [...(ledger.income || []), ...(ledger.expense || [])];
+  for (const add of adds) {
+    const row = rows.find((r) => r.category === add.category);
+    if (!row || !Array.isArray(row.fact)) continue;
+    const i = Number(add.month || 1) - 1;
+    if (i < 0 || i > 11) continue;
+    row.fact[i] = Number(row.fact[i] || 0) + Number(add.amount || 0);
+  }
+  return ledger;
+}
+
 async function boot() {
   applyTheme(currentTheme());
   $("theme-toggle").addEventListener("click", () => {
@@ -120,7 +136,7 @@ async function boot() {
   sel.value = String(state.month);
 
   try {
-    const ledger = await api("/api/ledger");
+    const ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     state.ledger = ledger;
     state.categories = ledger.categories || [];
     $("rule-cat").innerHTML = state.categories.map((c) => `<option>${c}</option>`).join("");
@@ -272,7 +288,7 @@ async function applyMonth() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ year: 2026, month: state.month }),
     });
-    state.ledger = await api("/api/ledger");
+    state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     $("upload-status").textContent = `${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`;
     renderPropose();
     renderLedger(state.ledger);
@@ -284,7 +300,7 @@ async function applyMonth() {
 }
 
 async function loadDataTab() {
-  if (!state.ledger) state.ledger = await api("/api/ledger");
+  if (!state.ledger) state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
   renderLedger(state.ledger);
   await Promise.all([loadImports(), loadMerchants()]);
   if (!state.importId) {
@@ -428,7 +444,7 @@ async function loadAnalytics() {
     api("/api/ledger"),
   ]);
   state.analytics = an;
-  state.ledger = ledger;
+  state.ledger = applyVoiceAddsToLedger(ledger);
   $("analytics-period").textContent =
     `Январь — ${MONTHS[an.closed_month - 1]} 2026 · цель 12 млн с недвижимостью`;
 
@@ -753,7 +769,7 @@ function renderLedger(ledger) {
           value,
         }),
       });
-      state.ledger = await api("/api/ledger");
+      state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     });
   });
 }
