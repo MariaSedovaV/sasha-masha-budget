@@ -1,0 +1,8 @@
+.venv/
+site/data/
+__pycache__/
+*.pyc
+.DS_Store
+Archive/
+*.xlsx
+.cursor/

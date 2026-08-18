@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Sasha &amp; Masha | Мониторинг бюджета</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="static/styles.css" />
+  <script>
+    document.documentElement.dataset.theme = localStorage.getItem("sasha-theme") || "dark";
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="shell" id="shell">
+    <header class="top">
+      <div class="brand">
+        <span class="brand-kicker">семейный FCF · 2026</span>
+        <h1>Sasha &amp; Masha</h1>
+      </div>
+      <p class="period" id="analytics-period"></p>
+      <div class="top-right">
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Переключить тему">Светлая</button>
+        <nav class="tabs">
+          <button class="tab active" data-view="analytics">Аналитика</button>
+          <button class="tab" data-view="share">Вклад</button>
+          <button class="tab" data-view="data">Данные</button>
+        </nav>
+      </div>
+    </header>
+
+    <section id="view-analytics" class="view dash">
+      <div class="ticker" id="markets"></div>
+
+      <div class="dash-body">
+        <section class="panel fcf">
+          <div class="panel-head">
+            <div>
+              <h2>Кумулятив FCF</h2>
+              <p class="hint">план vs факт, млн ₽</p>
+            </div>
+            <div class="kpi-mini" id="budget-kpis"></div>
+          </div>
+          <div class="chart-box">
+            <canvas id="chart-cumul"></canvas>
+          </div>
+        </section>
+
+        <section class="panel slice">
+          <div class="panel-head">
+            <div>
+              <h2>Факт против плана</h2>
+              <p class="hint">группа цветом · статья бирюзой: клик выбирает, второй клик добавляет</p>
+            </div>
+            <div class="view-toggle" id="slice-mode">
+              <button data-mode="month" class="active">по месяцам</button>
+              <button data-mode="cat">по статьям</button>
+              <button type="button" class="ghost" id="btn-reset-filters">Сбросить фильтры</button>
+            </div>
+          </div>
+          <div class="filters" id="filters"></div>
+          <div class="cats-wrap" id="cat-picks"></div>
+          <div class="chart-box">
+            <canvas id="chart-slice"></canvas>
+          </div>
+        </section>
+
+        <aside class="side">
+          <section class="panel conclusions">
+            <h2>Ключевые выводы</h2>
+            <div id="conclusions" class="rail"></div>
+          </section>
+          <section class="panel recs-panel">
+            <h2>Рекомендации</h2>
+            <div id="recs" class="recs"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <section id="view-share" class="view share-view hidden">
+      <p class="hint share-lead" id="share-source"></p>
+      <div class="share-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Накопления</h2>
+              <p class="hint">вкладка «Разделение_деньги»</p>
+            </div>
+            <div class="kpi-mini" id="share-cash-kpis"></div>
+          </div>
+          <div class="chart-box share-chart">
+            <canvas id="chart-savings"></canvas>
+          </div>
+          <div id="cash-from-sasha" class="share-table"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Недвижимость</h2>
+              <p class="hint">вкладка «Разделение_недвижимость» · стоимость — оплаченный факт</p>
+            </div>
+            <div class="kpi-mini" id="share-prop-kpis"></div>
+          </div>
+          <div class="chart-box share-chart">
+            <canvas id="chart-property"></canvas>
+          </div>
+          <div id="property-table" class="share-table"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="view-data" class="view data-view hidden">
+      <div class="data-grid">
+        <section class="panel">
+          <h2>Загрузка справки</h2>
+          <p class="hint">PDF Т-Банка. Ипотека и Таиланд из Excel загрузка не затирает.</p>
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept="application/pdf" hidden />
+            <strong>Перетащите PDF</strong>
+            <span>или нажмите, чтобы выбрать файл</span>
+          </label>
+          <p class="status" id="upload-status"></p>
+          <h3>Импорты</h3>
+          <div id="import-list" class="import-list"></div>
+        </section>
+
+        <section class="panel grow">
+          <div class="panel-head">
+            <div>
+              <h2>Операции и категории</h2>
+              <p class="hint">Смена статьи запоминается для магазина.</p>
+            </div>
+            <div class="toolbar tight">
+              <label>Месяц
+                <select id="import-month"></select>
+              </label>
+              <label class="grow">Поиск
+                <input id="tx-search" type="search" placeholder="магазин, перевод…" />
+              </label>
+              <button class="btn" id="btn-apply">Записать месяц в факт</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="tx-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Дата</th>
+                  <th>Сумма</th>
+                  <th>Описание</th>
+                  <th>Статья</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="propose" class="propose"></div>
+        </section>
+
+        <section class="panel rules">
+          <h2>Правила магазинов</h2>
+          <p class="hint">Сайт подставит статью при следующей справке.</p>
+          <form id="rule-form" class="rule-form">
+            <input id="rule-needle" placeholder="фрагмент описания" required />
+            <select id="rule-cat"></select>
+            <button class="btn" type="submit">Запомнить</button>
+          </form>
+          <div id="merchant-list" class="merchant-list"></div>
+        </section>
+      </div>
+
+      <section class="panel ledger-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Корректировка факта</h2>
+            <p class="hint">Правка ячейки сразу пишется в модель. Аналитика пересчитается при возврате на вкладку.</p>
+          </div>
+        </div>
+        <div class="table-wrap ledger" id="ledger-wrap"></div>
+      </section>
+    </section>
+  </div>
+  <script src="static/app.js"></script>
+</body>
+</html>
