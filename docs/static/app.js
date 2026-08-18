@@ -99,7 +99,8 @@ function applyVoiceAddsToLedger(ledger) {
   let adds = [];
   try { adds = JSON.parse(localStorage.getItem("sasha-masha-budget-adds") || "[]"); } catch {}
   if (!Array.isArray(adds) || !adds.length) return ledger;
-  const rows = [...(ledger.income || []), ...(ledger.expense || [])];
+  const copy = JSON.parse(JSON.stringify(ledger));
+  const rows = [...(copy.income || []), ...(copy.expense || [])];
   for (const add of adds) {
     const row = rows.find((r) => r.category === add.category);
     if (!row || !Array.isArray(row.fact)) continue;
@@ -107,7 +108,7 @@ function applyVoiceAddsToLedger(ledger) {
     if (i < 0 || i > 11) continue;
     row.fact[i] = Number(row.fact[i] || 0) + Number(add.amount || 0);
   }
-  return ledger;
+  return copy;
 }
 
 async function boot() {
@@ -773,5 +774,12 @@ function renderLedger(ledger) {
     });
   });
 }
+
+window.sashaBudgetReload = async function () {
+  try {
+    state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
+    if ($("ledger-wrap")) renderLedger(state.ledger);
+  } catch {}
+};
 
 boot().catch((err) => { $("upload-status").textContent = err.message; });
