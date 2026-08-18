@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from engine.categories import FILTER_GROUPS
-from engine.db import get_meta, init_db, ledger_rows
+from engine.db import get_meta, init_db, ledger_rows, pack_ledger
 from engine.insights import build_insights
 from engine.markets import fetch_markets
 from engine.share import build_share
@@ -35,6 +35,7 @@ def main() -> None:
         "share": share,
         "markets": markets,
         "health": {"ok": True, "excel": excel, "closed_month": closed},
+        "ledger": pack_ledger(rows, closed),
     }
     for name, data in payloads.items():
         (OUT / f"{name}.json").write_text(json.dumps(data, ensure_ascii=False, default=str), encoding="utf-8")

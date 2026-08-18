@@ -19,7 +19,7 @@ from engine.categories import (
     MONTHS_RU,
 )
 from engine.categorize import categorize
-from engine.db import get_meta, init_db, ledger_rows, set_meta, upsert_ledger
+from engine.db import get_meta, init_db, ledger_rows, pack_ledger, set_meta, upsert_ledger
 from engine.insights import build_insights
 from engine.markets import fetch_markets
 from engine.pdf_parse import parse_statement_pdf
@@ -81,26 +81,9 @@ def api_ledger(year: int = 2026):
     conn = init_db()
     rows = ledger_rows(conn, year)
     closed = int(get_meta(conn, "closed_month", "7") or 7)
+    data = pack_ledger(rows, closed)
     conn.close()
-    by_cat: dict[str, dict] = {}
-    for r in rows:
-        item = by_cat.setdefault(
-            r["category"],
-            {"category": r["category"], "kind": r["kind"], "plan": [0] * 12, "fact": [0] * 12, "source": [""] * 12},
-        )
-        item["plan"][r["month"] - 1] = r["plan"]
-        item["fact"][r["month"] - 1] = r["fact"]
-        item["source"][r["month"] - 1] = r["source"]
-    income = [by_cat[c] for c in INCOME_CATEGORIES if c in by_cat]
-    expense = [by_cat[c] for c in EXPENSE_CATEGORIES if c in by_cat]
-    return {
-        "year": year,
-        "months": MONTHS_RU[1:],
-        "closed_month": closed,
-        "income": income,
-        "expense": expense,
-        "categories": ALL_CATEGORIES,
-    }
+    return data
 
 
 @app.patch("/api/ledger")

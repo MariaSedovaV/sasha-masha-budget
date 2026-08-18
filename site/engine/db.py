@@ -90,6 +90,28 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def pack_ledger(rows: list[dict[str, Any]], closed: int) -> dict[str, Any]:
+    from .categories import ALL_CATEGORIES, EXPENSE_CATEGORIES, INCOME_CATEGORIES, MONTHS_RU
+
+    by_cat: dict[str, dict] = {}
+    for r in rows:
+        item = by_cat.setdefault(
+            r["category"],
+            {"category": r["category"], "kind": r["kind"], "plan": [0] * 12, "fact": [0] * 12, "source": [""] * 12},
+        )
+        item["plan"][r["month"] - 1] = r["plan"]
+        item["fact"][r["month"] - 1] = r["fact"]
+        item["source"][r["month"] - 1] = r["source"]
+    return {
+        "year": 2026,
+        "months": MONTHS_RU[1:],
+        "closed_month": closed,
+        "income": [by_cat[c] for c in INCOME_CATEGORIES if c in by_cat],
+        "expense": [by_cat[c] for c in EXPENSE_CATEGORIES if c in by_cat],
+        "categories": ALL_CATEGORIES,
+    }
+
+
 def ledger_rows(conn: sqlite3.Connection, year: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT * FROM ledger WHERE year = ? ORDER BY kind, category, month",

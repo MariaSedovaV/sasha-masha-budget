@@ -61,18 +61,28 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
+function isLocalApi() {
+  return location.hostname === "127.0.0.1" || location.hostname === "localhost";
+}
+
 async function api(path, opts) {
-  const urls = [path];
+  const name = path.replace(/^\/api\//, "").split("?")[0];
+  const urls = [];
+  if (isLocalApi()) urls.push(path);
   if (!opts || !opts.method || opts.method === "GET") {
-    const name = path.replace(/^\/api\//, "").split("?")[0];
-    urls.push("api/" + name);
     urls.push("static/snapshot/" + name + ".json");
   }
-  let last = new Error(path);
+  let last = new Error("Нет данных: " + path);
   for (const url of urls) {
     try {
-      const res = await fetch(url, opts);
-      if (res.ok) return res.json();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(url, { ...opts, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
       last = new Error((await res.text()) || res.statusText);
     } catch (err) {
       last = err;
@@ -83,29 +93,46 @@ async function api(path, opts) {
 }
 
 async function boot() {
-  const health = await api("/api/health");
-  $("upload-status").textContent = health.excel
-    ? `История из ${health.excel}. Закрытый месяц: ${MONTHS[health.closed_month - 1]}.`
-    : "";
-  const ledger = await api("/api/ledger");
-  state.ledger = ledger;
-  state.categories = ledger.categories;
-  state.month = Math.min(12, (health.closed_month || 7) + 1);
+  applyTheme(currentTheme());
+  $("theme-toggle").addEventListener("click", () => {
+    applyTheme(currentTheme() === "light" ? "dark" : "light");
+  });
   const sel = $("import-month");
   sel.innerHTML = MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
-  sel.value = String(state.month);
   sel.addEventListener("change", () => {
     state.month = Number(sel.value);
     renderPropose();
     renderTx();
   });
-  $("rule-cat").innerHTML = state.categories.map((c) => `<option>${c}</option>`).join("");
-  applyTheme(currentTheme());
-  $("theme-toggle").addEventListener("click", () => {
-    applyTheme(currentTheme() === "light" ? "dark" : "light");
-  });
-  await Promise.all([loadAnalytics(), loadMarkets()]);
-  setInterval(loadMarkets, 60 * 60 * 1000);
+
+  let health = { closed_month: 7, excel: null };
+  try {
+    health = await api("/api/health");
+    $("upload-status").textContent = health.excel
+      ? `История из ${health.excel}. Закрытый месяц: ${MONTHS[health.closed_month - 1]}.`
+      : "";
+  } catch (err) {
+    $("upload-status").textContent = "Сервер недоступен, показан сохранённый снимок.";
+  }
+  state.month = Math.min(12, (health.closed_month || 7) + 1);
+  sel.value = String(state.month);
+
+  try {
+    const ledger = await api("/api/ledger");
+    state.ledger = ledger;
+    state.categories = ledger.categories || [];
+    $("rule-cat").innerHTML = state.categories.map((c) => `<option>${c}</option>`).join("");
+  } catch (err) {
+    state.ledger = { income: [], expense: [], categories: [] };
+    state.categories = [];
+  }
+
+  try {
+    await Promise.all([loadAnalytics(), loadMarkets()]);
+  } catch (err) {
+    $("upload-status").textContent = "Не удалось загрузить аналитику: " + (err.message || err);
+  }
+  if (isLocalApi()) setInterval(loadMarkets, 60 * 60 * 1000);
 }
 
 const drop = $("drop");
