@@ -1,5 +1,8 @@
 (function (global) {
   const CONFIG_URL = "https://mariasedovav.github.io/sasha-masha/cloud-config.json";
+  const GIST_ID = "3ed81968af537a456e6586467e4a7a7a";
+  const GIST_RAW = "https://gist.githubusercontent.com/MariaSedovaV/" + GIST_ID + "/raw/family-cloud.json";
+  const GIST_API = "https://api.github.com/gists/" + GIST_ID;
   const LOCAL_CLOUD = "sasha-masha-cloud";
   const NOTES_KEY = "sasha-masha-notes";
   const BUDGET_KEY = "sasha-masha-budget-adds";
@@ -142,48 +145,60 @@
   }
 
   async function loadConfig() {
-    const urls = [
-      CONFIG_URL + "?t=" + Date.now(),
-      new URL("cloud-config.json", location.href).href + "?t=" + Date.now(),
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) continue;
+    storeUrl = GIST_RAW;
+    try {
+      const res = await fetch(CONFIG_URL + "?t=" + Date.now(), { cache: "no-store" });
+      if (res.ok) {
         const cfg = await res.json();
-        if (cfg && cfg.id && cfg.store === "jsonblob") {
-          storeUrl = "https://jsonblob.com/api/jsonBlob/" + cfg.id;
-          return true;
-        }
-        if (cfg && cfg.url) {
-          storeUrl = cfg.url;
-          return true;
-        }
-      } catch {}
-    }
-    return false;
+        if (cfg && cfg.raw) storeUrl = cfg.raw;
+      }
+    } catch {}
+    return true;
   }
 
   async function remoteGet() {
-    if (!storeUrl) return null;
-    const res = await fetch(storeUrl, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    if (res.status === 404) return empty();
-    if (!res.ok) throw new Error("cloud-get " + res.status);
-    return await res.json();
+    const urls = [
+      (storeUrl || GIST_RAW) + "?t=" + Date.now(),
+      "https://mariasedovav.github.io/sasha-masha/family-cloud.json?t=" + Date.now(),
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!res.ok) continue;
+        const text = await res.text();
+        const data = JSON.parse(text);
+        if (data && typeof data === "object") return data;
+      } catch {}
+    }
+    return empty();
   }
 
   async function remotePut(state) {
-    if (!storeUrl) return false;
-    const res = await fetch(storeUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(state),
+    const encoded = JSON.stringify(state);
+    const gistBody = JSON.stringify({
+      files: { "family-cloud.json": { content: encoded } },
     });
-    if (!res.ok) throw new Error("cloud-put " + res.status);
-    return true;
+    const gistRes = await fetch(GIST_API, {
+      method: "PATCH",
+      headers: {
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: gistBody,
+    });
+    if (gistRes.ok) return true;
+    const dispatchRes = await fetch("https://api.github.com/repos/MariaSedovaV/sasha-masha/dispatches", {
+      method: "POST",
+      headers: {
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({ event_type: "family-cloud", client_payload: { snapshot: state } }),
+    });
+    if (dispatchRes.ok || dispatchRes.status === 204) return true;
+    throw new Error("cloud-put " + gistRes.status);
   }
 
   function enqueue(fn) {
