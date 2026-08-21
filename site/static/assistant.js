@@ -108,8 +108,11 @@
   }
   function addNote(person, text) {
     const notes = loadNotes();
-    notes[person].push({ id: uid(), text, done: false, at: Date.now() });
+    notes[person].push({ id: uid(), text, done: false, at: Date.now(), updatedAt: Date.now() });
     localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+    if (window.SashaCloud && typeof window.SashaCloud.setNotes === "function") {
+      window.SashaCloud.setNotes(notes);
+    }
   }
   function addExpense(category, amount) {
     const month = currentMonth();
@@ -117,8 +120,11 @@
     let list = [];
     try { list = JSON.parse(localStorage.getItem(BUDGET_ADDS_KEY) || "[]"); } catch {}
     if (!Array.isArray(list)) list = [];
-    list.push({ id: uid(), year, month, category, amount, at: Date.now() });
+    list.push({ id: uid(), year, month, category, amount, at: Date.now(), updatedAt: Date.now() });
     localStorage.setItem(BUDGET_ADDS_KEY, JSON.stringify(list));
+    if (window.SashaCloud && typeof window.SashaCloud.setBudgetAdds === "function") {
+      window.SashaCloud.setBudgetAdds(list);
+    }
     return { month, year };
   }
   function speak(text) {
