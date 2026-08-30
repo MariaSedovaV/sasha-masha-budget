@@ -3,6 +3,7 @@
   const GIST_ID = "3ed81968af537a456e6586467e4a7a7a";
   const GIST_RAW = "https://gist.githubusercontent.com/MariaSedovaV/" + GIST_ID + "/raw/family-cloud.json";
   const GIST_API = "https://api.github.com/gists/" + GIST_ID;
+  const PAGES_CLOUD = "https://mariasedovav.github.io/sasha-masha/family-cloud.json";
   const LOCAL_CLOUD = "sasha-masha-cloud";
   const NOTES_KEY = "sasha-masha-notes";
   const BUDGET_KEY = "sasha-masha-budget-adds";
@@ -11,10 +12,12 @@
 
   const listeners = [];
   let snapshot = empty();
-  let storeUrl = "";
+  let storeUrl = GIST_RAW;
+  let writeUrl = "";
+  let gistToken = "";
   let chain = Promise.resolve();
-  let lastJson = "";
   let started = false;
+  let cloudStatus = { ok: false, error: "", at: 0 };
 
   function empty() {
     return {
@@ -45,8 +48,7 @@
   }
 
   function stamp(item) {
-    const t = Number(item?.updatedAt || item?.at || 0);
-    return t;
+    return Number(item?.updatedAt || item?.at || 0);
   }
 
   function mergeItems(a, b) {
@@ -135,6 +137,10 @@
     } catch {}
   }
 
+  function setStatus(ok, error) {
+    cloudStatus = { ok: !!ok, error: error || "", at: Date.now() };
+  }
+
   function notify() {
     listeners.forEach((fn) => {
       try { fn(clone(snapshot)); } catch {}
@@ -144,61 +150,105 @@
     try { if (typeof global.sashaPitanieReload === "function") global.sashaPitanieReload(); } catch {}
   }
 
+  function parseCloud(text) {
+    const data = JSON.parse(text);
+    if (!data || typeof data !== "object") throw new Error("bad-cloud");
+    return data;
+  }
+
   async function loadConfig() {
     storeUrl = GIST_RAW;
+    writeUrl = "";
+    gistToken = "";
     try {
       const res = await fetch(CONFIG_URL + "?t=" + Date.now(), { cache: "no-store" });
-      if (res.ok) {
-        const cfg = await res.json();
-        if (cfg && cfg.raw) storeUrl = cfg.raw;
-      }
+      if (!res.ok) return;
+      const cfg = await res.json();
+      if (cfg && cfg.raw) storeUrl = cfg.raw;
+      if (cfg && cfg.url && String(cfg.store || "") === "jsonblob") writeUrl = cfg.url;
+      if (cfg && typeof cfg.token === "string") gistToken = cfg.token.trim();
     } catch {}
-    return true;
   }
 
   async function remoteGet() {
+    if (gistToken) {
+      try {
+        const res = await fetch(GIST_API, {
+          cache: "no-store",
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: "Bearer " + gistToken,
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        });
+        if (res.ok) {
+          const gist = await res.json();
+          const content = gist?.files?.["family-cloud.json"]?.content;
+          if (content) return parseCloud(content);
+        }
+      } catch {}
+    }
+
     const urls = [
-      (storeUrl || GIST_RAW) + "?t=" + Date.now(),
-      "https://mariasedovav.github.io/sasha-masha/family-cloud.json?t=" + Date.now(),
-    ];
+      writeUrl,
+      (storeUrl || GIST_RAW) + (storeUrl && storeUrl.indexOf("?") >= 0 ? "&t=" : "?t=") + Date.now(),
+      PAGES_CLOUD + "?t=" + Date.now(),
+    ].filter(Boolean);
+
     for (const url of urls) {
       try {
         const res = await fetch(url, { headers: { Accept: "application/json" }, cache: "no-store" });
         if (!res.ok) continue;
-        const text = await res.text();
-        const data = JSON.parse(text);
-        if (data && typeof data === "object") return data;
+        return parseCloud(await res.text());
       } catch {}
     }
     return empty();
   }
 
-  async function remotePut(state) {
+  async function putOnce(state) {
     const encoded = JSON.stringify(state);
-    const gistBody = JSON.stringify({
-      files: { "family-cloud.json": { content: encoded } },
-    });
-    const gistRes = await fetch(GIST_API, {
-      method: "PATCH",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: gistBody,
-    });
-    if (gistRes.ok) return true;
-    const dispatchRes = await fetch("https://api.github.com/repos/MariaSedovaV/sasha-masha/dispatches", {
-      method: "POST",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: JSON.stringify({ event_type: "family-cloud", client_payload: { snapshot: state } }),
-    });
-    if (dispatchRes.ok || dispatchRes.status === 204) return true;
-    throw new Error("cloud-put " + gistRes.status);
+
+    if (writeUrl) {
+      const blobRes = await fetch(writeUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: encoded,
+      });
+      if (blobRes.ok) return true;
+    }
+
+    if (gistToken) {
+      const gistRes = await fetch(GIST_API, {
+        method: "PATCH",
+        headers: {
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + gistToken,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        body: JSON.stringify({
+          files: { "family-cloud.json": { content: encoded } },
+        }),
+      });
+      if (gistRes.ok) return true;
+      throw new Error("cloud-put " + gistRes.status);
+    }
+
+    throw new Error("cloud-put 401");
+  }
+
+  async function remotePut(state) {
+    let last = null;
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        await putOnce(state);
+        return true;
+      } catch (err) {
+        last = err;
+        await new Promise((resolve) => setTimeout(resolve, 400 * (i + 1)));
+      }
+    }
+    throw last || new Error("cloud-put");
   }
 
   function enqueue(fn) {
@@ -221,8 +271,7 @@
     if (localExtra) local = mergeState(local, localExtra);
     persistLocal(local);
 
-    if (!storeUrl) await loadConfig();
-    if (!storeUrl) return snapshot;
+    await loadConfig();
 
     let remote = empty();
     try { remote = await remoteGet() || empty(); } catch { return snapshot; }
@@ -230,23 +279,24 @@
     let merged = mergeState(remote, local);
     persistLocal(merged);
     if (core(merged) === core(remote)) {
-      lastJson = JSON.stringify(merged);
+      setStatus(true, "");
       return snapshot;
     }
     merged.rev = Number(merged.rev || 0) + 1;
     persistLocal(merged);
     try {
       await remotePut(merged);
-      lastJson = JSON.stringify(merged);
+      setStatus(true, "");
       const check = await remoteGet();
       const again = mergeState(check, merged);
       if (core(again) !== core(merged)) {
         again.rev = Number(again.rev || 0) + 1;
         persistLocal(again);
         await remotePut(again);
-        lastJson = JSON.stringify(again);
       }
-    } catch {}
+    } catch (err) {
+      setStatus(false, String(err?.message || err || "cloud-put"));
+    }
     return snapshot;
   }
 
@@ -262,8 +312,9 @@
     setInterval(() => {
       enqueue(async () => {
         const before = JSON.stringify(snapshot);
+        const beforeStatus = cloudStatus.ok + cloudStatus.error;
         await pullMergePush();
-        if (JSON.stringify(snapshot) !== before) notify();
+        if (JSON.stringify(snapshot) !== before || beforeStatus !== cloudStatus.ok + cloudStatus.error) notify();
       });
     }, 4000);
     document.addEventListener("visibilitychange", () => {
@@ -297,6 +348,7 @@
   global.SashaCloud = {
     start,
     snapshot() { return clone(snapshot); },
+    status() { return { ...cloudStatus }; },
     subscribe(fn) { if (typeof fn === "function") listeners.push(fn); },
     setNotes(notes) {
       return applyPatch((s) => {
@@ -307,7 +359,22 @@
       });
     },
     replaceNotes(notes) {
-      return applyPatch((s) => { s.notes = notes; });
+      return applyPatch((s) => {
+        s.notes = {
+          sasha: mergeItems(s.notes.sasha, notes?.sasha),
+          masha: mergeItems(s.notes.masha, notes?.masha),
+        };
+      });
+    },
+    deleteNote(person, id) {
+      return applyPatch((s) => {
+        const list = s.notes[person] || [];
+        const item = list.find((t) => String(t.id) === String(id));
+        if (item) {
+          item.deleted = true;
+          item.updatedAt = Date.now();
+        }
+      });
     },
     setBudgetAdds(list) {
       return applyPatch((s) => { s.budgetAdds = mergeItems(s.budgetAdds, list); });
