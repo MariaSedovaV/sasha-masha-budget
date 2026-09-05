@@ -10,6 +10,7 @@ from .categories import EXPENSE_CATEGORIES, INCOME_CATEGORIES
 from .db import set_meta, upsert_ledger
 
 EXCEL_CANDIDATES = [
+    Path("/Users/Sedova.Maria/Desktop/Саша/Мониторинг бюджета/5.09.2026_Бюджет 2026.xlsx"),
     Path("/Users/Sedova.Maria/Desktop/Саша/Мониторинг бюджета/16.08.2026_Бюджет 2026.xlsx"),
     Path("/Users/Sedova.Maria/Desktop/Саша/Мониторинг бюджета/16.07.2026_Бюджет 2026.xlsx"),
 ]
@@ -113,25 +114,43 @@ def seed_from_excel(conn, path: Path | None = None) -> str:
     plan = wb["FCF 2026 ПЛАН"]
     fact = wb["FCF 2026 ФАКТ"]
 
+    # План: колонки 2026 (C–N), 2027 (O–Z), 2028 (AA–AL) — как в Excel
+    for year in (2026, 2027, 2028):
+        for month in range(1, 13):
+            col = 3 + (year - 2026) * 12 + (month - 1)
+            for cat, row in PLAN_INCOME.items():
+                upsert_ledger(
+                    conn, year, month, cat, "income",
+                    plan=_num(plan.cell(row, col).value), source="excel",
+                )
+            for cat, row in PLAN_EXPENSE.items():
+                upsert_ledger(
+                    conn, year, month, cat, "expense",
+                    plan=_num(plan.cell(row, col).value), source="excel",
+                )
+
+    # Факт только 2026
     year = 2026
     for month in range(1, 13):
         col = 2 + month  # C=3 for January
-        for cat, row in PLAN_INCOME.items():
-            upsert_ledger(conn, year, month, cat, "income", plan=_num(plan.cell(row, col).value), source="excel")
-        for cat, row in PLAN_EXPENSE.items():
-            upsert_ledger(conn, year, month, cat, "expense", plan=_num(plan.cell(row, col).value), source="excel")
         for cat, row in FACT_INCOME.items():
-            upsert_ledger(conn, year, month, cat, "income", fact=_num(fact.cell(row, col).value), source="excel")
+            upsert_ledger(
+                conn, year, month, cat, "income",
+                fact=_num(fact.cell(row, col).value), source="excel",
+            )
         for cat, row in FACT_EXPENSE.items():
-            upsert_ledger(conn, year, month, cat, "expense", fact=_num(fact.cell(row, col).value), source="excel")
+            upsert_ledger(
+                conn, year, month, cat, "expense",
+                fact=_num(fact.cell(row, col).value), source="excel",
+            )
 
-        # Август в выгрузке 16.08 ещё не закрыт; сентябрь–декабрь копируют план
-        if month == 8:
+        # Август закрыт в выгрузке 5.09; сентябрь — частичный; окт–дек — ещё план
+        if month == 9:
             conn.execute(
                 "UPDATE ledger SET source='partial' WHERE year=? AND month=?",
                 (year, month),
             )
-        elif month >= 9:
+        elif month >= 10:
             conn.execute(
                 "UPDATE ledger SET source='forecast' WHERE year=? AND month=?",
                 (year, month),
@@ -139,6 +158,6 @@ def seed_from_excel(conn, path: Path | None = None) -> str:
 
     set_meta(conn, "excel_file", excel.name)
     set_meta(conn, "seeded", "1")
-    set_meta(conn, "closed_month", "7")
+    set_meta(conn, "closed_month", "8")
     conn.commit()
     return excel.name

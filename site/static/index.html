@@ -32,22 +32,29 @@
       <p class="period" id="analytics-period"></p>
       <nav class="tabs">
         <button class="tab active" data-view="analytics">Аналитика</button>
-        <button class="tab" data-view="share">Вклад</button>
+        <button class="tab" data-view="share">Стоимость активов</button>
         <button class="tab" data-view="data">Данные</button>
       </nav>
     </div>
 
-    <section id="view-analytics" class="view dash">
-      <div class="ticker" id="markets"></div>
+    <div class="ticker" id="markets"></div>
 
+    <section id="view-analytics" class="view dash">
       <div class="dash-body">
         <section class="panel fcf">
           <div class="panel-head">
             <div>
               <h2>Кумулятив FCF</h2>
-              <p class="hint">план vs факт, млн ₽</p>
+              <p class="hint">факт 2026 · план до 2028, млн ₽</p>
             </div>
             <div class="kpi-mini" id="budget-kpis"></div>
+          </div>
+          <div class="year-picks" id="fcf-years">
+            <span class="year-picks-label">Годы</span>
+            <button type="button" class="chip year-chip active" data-year="2026">2026</button>
+            <button type="button" class="chip year-chip active" data-year="2027">2027</button>
+            <button type="button" class="chip year-chip active" data-year="2028">2028</button>
+            <button type="button" class="chip year-reset" id="btn-fcf-reset">Сбросить</button>
           </div>
           <div class="chart-box">
             <canvas id="chart-cumul"></canvas>
@@ -58,16 +65,17 @@
           <div class="panel-head">
             <div>
               <h2>Факт против плана</h2>
-              <p class="hint">группа цветом · статья бирюзой: клик выбирает, второй клик добавляет</p>
+              <p class="hint">без фильтров — доходы и расходы · с фильтрами — выбранные статьи</p>
             </div>
             <div class="view-toggle" id="slice-mode">
-              <button data-mode="month" class="active">по месяцам</button>
-              <button data-mode="cat">по статьям</button>
-              <button type="button" class="ghost" id="btn-reset-filters">Сбросить фильтры</button>
+              <button type="button" class="ghost" id="btn-slice-detail" aria-pressed="false">Детализация</button>
+              <button type="button" class="ghost" id="btn-reset-filters">Сбросить</button>
             </div>
           </div>
-          <div class="filters" id="filters"></div>
-          <div class="cats-wrap" id="cat-picks"></div>
+          <div class="filter-shell">
+            <div class="filters" id="filters" aria-label="Группы фильтров"></div>
+            <div class="filter-nest hidden" id="filter-nest"></div>
+          </div>
           <div class="chart-box">
             <canvas id="chart-slice"></canvas>
           </div>
@@ -87,35 +95,80 @@
     </section>
 
     <section id="view-share" class="view share-view hidden">
-      <p class="hint share-lead" id="share-source"></p>
-      <div class="share-grid">
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <h2>Накопления</h2>
-              <p class="hint">вкладка «Разделение_деньги»</p>
-            </div>
-            <div class="kpi-mini" id="share-cash-kpis"></div>
-          </div>
-          <div class="chart-box share-chart">
-            <canvas id="chart-savings"></canvas>
-          </div>
-          <div id="cash-from-sasha" class="share-table"></div>
-        </section>
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <h2>Недвижимость</h2>
-              <p class="hint">вкладка «Разделение_недвижимость» · доли собственников</p>
-            </div>
-            <div class="kpi-mini" id="share-prop-kpis"></div>
-          </div>
-          <div class="chart-box share-chart">
-            <canvas id="chart-property"></canvas>
-          </div>
-          <div id="property-table" class="share-table"></div>
-        </section>
+      <div class="share-hero">
+        <h2 class="share-title">Стоимость активов во времени</h2>
+        <div class="kpi-mini" id="share-hero-kpis"></div>
       </div>
+
+      <div class="share-main-grid">
+        <section class="panel share-chart-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Портфель</h2>
+              <p class="hint">рыночная стоимость · факт сплошной · прогноз пунктиром · Пхукет с 2029</p>
+            </div>
+            <div class="kpi-mini asset-now-kpis" id="share-cash-kpis"></div>
+          </div>
+          <div class="portfolio-controls">
+            <div class="year-picks asset-year-picks" id="asset-years">
+              <span class="year-picks-label">Годы</span>
+              <button type="button" class="chip year-chip active" data-year="2024">2024</button>
+              <button type="button" class="chip year-chip active" data-year="2025">2025</button>
+              <button type="button" class="chip year-chip active" data-year="2026">2026</button>
+              <button type="button" class="chip year-chip active" data-year="2027">2027</button>
+              <button type="button" class="chip year-chip active" data-year="2028">2028</button>
+              <button type="button" class="chip year-chip active" data-year="2029">2029</button>
+              <button type="button" class="chip year-chip active" data-year="2030">2030</button>
+              <button type="button" class="chip year-reset" id="btn-asset-years-reset">Сбросить</button>
+            </div>
+            <div class="portfolio-filters-row">
+              <div class="asset-filters" id="asset-filters" aria-label="Активы"></div>
+              <button type="button" class="chip year-reset" id="btn-asset-filters-reset">Сбросить</button>
+            </div>
+            <div class="share-toggles">
+              <label class="toggle-pill"><input type="checkbox" id="show-forecast" checked /> Прогноз до 2030</label>
+              <label class="toggle-pill"><input type="checkbox" id="show-drivers" /> Драйверы рынка</label>
+            </div>
+          </div>
+          <div class="chart-box share-chart-lg">
+            <canvas id="chart-assets"></canvas>
+          </div>
+          <div class="chart-box share-chart-sm hidden" id="drivers-wrap">
+            <canvas id="chart-drivers"></canvas>
+          </div>
+        </section>
+
+        <aside class="share-side">
+          <section class="panel">
+            <h2>Состав сейчас</h2>
+            <div class="chart-box share-donut">
+              <canvas id="chart-savings"></canvas>
+            </div>
+            <div id="cash-from-sasha" class="share-table"></div>
+          </section>
+          <section class="panel">
+            <h2>Доли недвижимости</h2>
+            <div id="share-prop-kpis"></div>
+            <div class="chart-box share-chart">
+              <canvas id="chart-property"></canvas>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="panel share-notes">
+        <h2>Допущения и источники</h2>
+        <div class="share-notes-grid">
+          <div>
+            <h3 class="notes-col-title">Допущения</h3>
+            <ul id="share-assumptions"></ul>
+          </div>
+          <div>
+            <h3 class="notes-col-title">Источники</h3>
+            <ul id="share-sources"></ul>
+          </div>
+        </div>
+      </section>
     </section>
 
     <section id="view-data" class="view data-view hidden">
@@ -182,15 +235,15 @@
         <div class="panel-head">
           <div>
             <h2>Корректировка факта</h2>
-            <p class="hint">Правка ячейки сразу пишется в модель. Аналитика пересчитается при возврате на вкладку.</p>
+            <p class="hint">Правка сразу пересчитывает Аналитику и Стоимость активов.</p>
           </div>
         </div>
         <div class="table-wrap ledger" id="ledger-wrap"></div>
       </section>
     </section>
   </div>
-  <script src="static/sync.js?v=10"></script>
-  <script src="static/app.js?v=6"></script>
-  <script src="static/assistant.js?v=7"></script>
+  <script src="static/sync.js?v=14"></script>
+  <script src="static/app.js?v=10"></script>
+  <script src="static/assistant.js?v=9"></script>
 </body>
 </html>

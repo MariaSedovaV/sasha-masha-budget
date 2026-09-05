@@ -112,11 +112,16 @@ def pack_ledger(rows: list[dict[str, Any]], closed: int) -> dict[str, Any]:
     }
 
 
-def ledger_rows(conn: sqlite3.Connection, year: int) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT * FROM ledger WHERE year = ? ORDER BY kind, category, month",
-        (year,),
-    ).fetchall()
+def ledger_rows(conn: sqlite3.Connection, year: int | None = 2026) -> list[dict[str, Any]]:
+    if year is None:
+        rows = conn.execute(
+            "SELECT * FROM ledger ORDER BY year, kind, category, month"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM ledger WHERE year = ? ORDER BY kind, category, month",
+            (year,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

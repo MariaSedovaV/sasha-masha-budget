@@ -1,9 +1,15 @@
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
-const GROUPS = [
-  { id: "basket", label: "Корзина 230" },
-  { id: "large", label: "Крупные" },
-  { id: "expense", label: "Все расходы" },
-  { id: "income", label: "Доходы" },
+const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3).toLowerCase());
+const DETAIL_PALETTE = [
+  "#d4b483", "#6ec4c8", "#8fbea8", "#8aa4c7", "#d9897a",
+  "#c4a574", "#5aadb2", "#6fa890", "#7a94b5", "#c7786a",
+  "#e8d3a8", "#9ad4d7", "#a8d0bc", "#a8bdd6", "#e5a89d",
+];
+
+const FALLBACK_TREE = [
+  { id: "basket", label: "Корзина", tone: "gold", categories: [], children: [] },
+  { id: "expense", label: "Все расходы", tone: "sage", categories: [], children: [] },
+  { id: "income", label: "Доходы", tone: "sky", categories: [], children: [] },
 ];
 
 let state = {
@@ -13,11 +19,19 @@ let state = {
   ledger: null,
   month: 8,
   analytics: null,
-  filterGroup: "basket",
+  filterGroups: [],
   selectedCats: [],
-  sliceMode: "month",
+  sliceDetail: false,
+  fcfYears: [2026, 2027, 2028],
   merchants: [],
   share: null,
+  assetIds: null,
+  showForecast: true,
+  showDrivers: false,
+  assetYears: [2024, 2025, 2026, 2027, 2028, 2029, 2030],
+  shareBound: false,
+  fcfYearsBound: false,
+  assetYearsBound: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -170,20 +184,55 @@ $("tx-search").addEventListener("input", renderTx);
 $("btn-apply").addEventListener("click", applyMonth);
 $("rule-form").addEventListener("submit", saveRule);
 
-document.querySelectorAll("#slice-mode button[data-mode]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("#slice-mode button[data-mode]").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    state.sliceMode = btn.dataset.mode;
-    paintSlice();
-  });
-});
 $("btn-reset-filters").addEventListener("click", () => {
-  state.filterGroup = "basket";
+  state.filterGroups = [];
   state.selectedCats = [];
+  state.sliceDetail = false;
+  const detailBtn = $("btn-slice-detail");
+  if (detailBtn) {
+    detailBtn.classList.remove("on");
+    detailBtn.setAttribute("aria-pressed", "false");
+  }
   renderFilters();
   paintSlice();
 });
+$("btn-slice-detail").addEventListener("click", () => {
+  state.sliceDetail = !state.sliceDetail;
+  $("btn-slice-detail").classList.toggle("on", state.sliceDetail);
+  $("btn-slice-detail").setAttribute("aria-pressed", state.sliceDetail ? "true" : "false");
+  paintSlice();
+});
+
+function bindFcfYears() {
+  if (state.fcfYearsBound) return;
+  state.fcfYearsBound = true;
+  const box = $("fcf-years");
+  if (box) {
+    box.querySelectorAll(".year-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const y = Number(btn.dataset.year);
+        // Клик выбирает год (фокус), а не снимает его с мультивыбора
+        const cur = state.fcfYears || [];
+        if (cur.length === 1 && cur[0] === y) return;
+        if (cur.length === 3) {
+          state.fcfYears = [y];
+        } else if (cur.includes(y)) {
+          state.fcfYears = [y];
+        } else {
+          state.fcfYears = [...cur, y].sort((a, b) => a - b);
+        }
+        paintCumul();
+      });
+    });
+  }
+  const reset = $("btn-fcf-reset");
+  if (reset) {
+    reset.addEventListener("click", () => {
+      state.fcfYears = [2026, 2027, 2028];
+      paintCumul();
+    });
+  }
+}
 
 async function upload(f) {
   $("upload-status").textContent = "Читаю справку…";
@@ -293,6 +342,7 @@ async function applyMonth() {
     $("upload-status").textContent = `${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`;
     renderPropose();
     renderLedger(state.ledger);
+    await refreshDerived();
   } catch (err) {
     $("upload-status").textContent = "Не записалось: " + err.message;
   } finally {
@@ -379,10 +429,28 @@ async function saveRule(e) {
 
 let charts = {};
 function paintChart(id, config) {
+  if (!charts || typeof charts !== "object") charts = {};
   if (charts[id]) charts[id].destroy();
   const ctx = $(id);
   if (!ctx) return;
   charts[id] = new Chart(ctx, config);
+}
+
+function chartInteraction() {
+  return { mode: "nearest", intersect: true };
+}
+
+function legendOpts(extra) {
+  return {
+    position: "bottom",
+    labels: { boxWidth: 10 },
+    onHover: () => {},
+    ...(extra || {}),
+  };
+}
+
+async function refreshDerived() {
+  await Promise.all([loadAnalytics(), loadShare()]);
 }
 
 function cssVar(name) {
@@ -452,8 +520,8 @@ async function loadAnalytics() {
   const dlt = an.delta;
   $("budget-kpis").innerHTML = [
     `<div class="chip-kpi"><b>${mln(an.cumul_fact)}</b><span>факт FCF</span></div>`,
-    `<div class="chip-kpi"><b>${dlt >= 0 ? "+" : "−"}${Math.abs(dlt / 1000).toFixed(0)} тыс.</b><span>к плану</span></div>`,
-    `<div class="chip-kpi"><b>${mln(an.net_worth)}</b><span>FCF + жильё</span></div>`,
+    `<div class="chip-kpi"><b>${dlt >= 0 ? "+" : "−"}${Math.abs(dlt / 1000).toFixed(0)} тыс.</b><span>опережение плана</span></div>`,
+    `<div class="chip-kpi"><b>${mln(an.net_worth)}</b><span>FCF+ жилье (опер. прогноз до конца года)</span></div>`,
   ].join("");
 
   themeCharts();
@@ -465,45 +533,172 @@ async function loadAnalytics() {
     `<article class="pulse ${c.tone}"><i class="dot"></i><div><h4>${c.title}</h4><p>${c.text}</p></div></article>`
   ).join("");
 
-  $("recs").innerHTML = an.recommendations.map((r) => {
-    const progress = r.tag === "цель 12 млн"
-      ? `<div class="bar"><i style="width:${Math.min(100, (an.net_worth / an.savings_goal) * 100)}%"></i></div>`
-      : "";
-    return `<article class="rec"><div class="rec-n">${r.n}</div><div>
-      <div class="rec-tag">${r.tag}</div><h4>${r.title}</h4><p>${r.text}</p>${progress}</div></article>`;
-  }).join("");
+  $("recs").innerHTML = an.recommendations.map((r) =>
+    `<article class="rec"><div class="rec-n">${r.n}</div><div>
+      <div class="rec-tag">${r.tag}</div><h4>${r.title}</h4><p>${r.text}</p></div></article>`
+  ).join("");
+}
+
+function filterTree() {
+  const an = state.analytics;
+  if (an && Array.isArray(an.filter_tree) && an.filter_tree.length) return an.filter_tree;
+  return FALLBACK_TREE.map((n) => ({
+    ...n,
+    categories: (an && an.filter_groups && an.filter_groups[n.id]) || [],
+  }));
+}
+
+function selectedGroupNodes() {
+  const tree = filterTree();
+  const ids = new Set(state.filterGroups || []);
+  return tree.filter((n) => ids.has(n.id));
 }
 
 function groupCats() {
-  const an = state.analytics;
-  if (!an) return [];
-  return an.filter_groups[state.filterGroup] || an.filter_groups.basket;
+  if (!(state.filterGroups || []).length) return [];
+  const set = new Set();
+  selectedGroupNodes().forEach((n) => (n.categories || []).forEach((c) => set.add(c)));
+  return [...set];
 }
 
 function activeCats() {
+  if (!(state.filterGroups || []).length) return [];
   return state.selectedCats.length ? state.selectedCats : groupCats();
+}
+
+function incomeCats() {
+  const tree = filterTree();
+  const node = tree.find((n) => n.id === "income");
+  if (node && Array.isArray(node.categories) && node.categories.length) return node.categories;
+  const fg = state.analytics && state.analytics.filter_groups && state.analytics.filter_groups.income;
+  if (Array.isArray(fg) && fg.length) return fg;
+  return ["Зарплата Саша", "Премия Саша", "Зарплата Маша", "Премия Маша", "Займы", "Подарки"];
+}
+
+function expenseCats() {
+  const fg = state.analytics && state.analytics.filter_groups && state.analytics.filter_groups.expense;
+  if (Array.isArray(fg) && fg.length) return fg;
+  const tree = filterTree();
+  const node = tree.find((n) => n.id === "expense");
+  if (node && Array.isArray(node.categories) && node.categories.length) return node.categories;
+  return [];
+}
+
+function syncFcfYearChips() {
+  const box = $("fcf-years");
+  if (!box) return;
+  const years = new Set(state.fcfYears || []);
+  box.querySelectorAll(".year-chip").forEach((btn) => {
+    const on = years.has(Number(btn.dataset.year));
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
 }
 
 function paintCumul() {
   const an = state.analytics;
   if (!an) return;
   themeCharts();
+  bindFcfYears();
+  syncFcfYearChips();
+
+  const hz = an.fcf_horizon;
   const gold = factColor();
+  const muted = cssVar("--muted");
+  const yearSet = new Set(state.fcfYears || []);
+
+  let labels = [];
+  let plan = [];
+  let fact = [];
+  let events = [];
+  let keep = [];
+
+  if (hz && Array.isArray(hz.labels)) {
+    hz.labels.forEach((lab, i) => {
+      const y = Number(String(lab).split(".")[1]);
+      if (yearSet.has(y)) keep.push(i);
+    });
+    labels = keep.map((i) => hz.labels[i]);
+    plan = keep.map((i) => hz.series_plan[i]);
+    fact = keep.map((i) => hz.series_fact[i]);
+    const indexMap = new Map(keep.map((orig, vis) => [orig, vis]));
+    events = (hz.events || [])
+      .filter((e) => indexMap.has(e.index))
+      .map((e) => ({ ...e, visIndex: indexMap.get(e.index) }));
+  } else {
+    labels = MONTHS.map((m) => m.slice(0, 3));
+    plan = an.series_plan || [];
+    fact = an.series_fact || [];
+  }
+
+  const eventData = labels.map((_, i) => {
+    const ev = events.find((e) => e.visIndex === i);
+    if (!ev) return null;
+    if (fact[i] != null) return fact[i];
+    if (plan[i] != null) return plan[i];
+    return 0;
+  });
+
+  const datasets = [
+    {
+      label: "План",
+      data: plan,
+      borderColor: muted,
+      backgroundColor: "transparent",
+      tension: 0.25,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      pointHoverRadius: 0,
+    },
+    {
+      label: "Факт",
+      data: fact,
+      borderColor: gold,
+      backgroundColor: hexFade(gold, 0.16),
+      fill: true,
+      tension: 0.25,
+      borderWidth: 2,
+      pointRadius: 0,
+      pointHoverRadius: 0,
+    },
+    {
+      label: "Ключевое событие",
+      data: eventData,
+      borderColor: gold,
+      backgroundColor: gold,
+      showLine: false,
+      pointRadius: (ctx) => (eventData[ctx.dataIndex] == null ? 0 : 6),
+      pointHoverRadius: 8,
+      pointStyle: "rectRot",
+      order: 0,
+      isEvent: true,
+    },
+  ];
+
   paintChart("chart-cumul", {
     type: "line",
-    data: {
-      labels: MONTHS.map((m) => m.slice(0, 3)),
-      datasets: [
-        { label: "План", data: an.series_plan, borderColor: cssVar("--muted"), backgroundColor: "transparent", tension: 0.25, borderWidth: 1.5, pointRadius: 2 },
-        { label: "Факт", data: an.series_fact, borderColor: gold, backgroundColor: hexFade(gold, 0.16), fill: true, tension: 0.25, borderWidth: 2, pointRadius: 3 },
-      ],
-    },
+    data: { labels, datasets },
     options: {
       maintainAspectRatio: false,
-      plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } },
+      interaction: { mode: "nearest", intersect: true, axis: "xy" },
+      plugins: {
+        legend: legendOpts(),
+        tooltip: {
+          enabled: true,
+          filter: (item) => item.dataset.isEvent && item.raw != null,
+          callbacks: {
+            title: () => "",
+            label: (ctx) => {
+              const ev = events.find((e) => e.visIndex === ctx.dataIndex);
+              if (!ev) return null;
+              return [ev.label, ev.detail, labels[ctx.dataIndex]].filter(Boolean);
+            },
+          },
+        },
+      },
       scales: {
         ...scaleOpts(),
-        y: { ...scaleOpts().y, title: { display: true, text: "млн ₽", color: cssVar("--muted") } },
+        y: { ...scaleOpts().y, title: { display: true, text: "млн ₽", color: muted } },
       },
     },
   });
@@ -518,154 +713,677 @@ function hexFade(hex, alpha) {
 }
 
 function renderFilters() {
+  const tree = filterTree();
   const limit = state.analytics ? Math.round(state.analytics.basket_limit / 1000) : 230;
-  $("filters").innerHTML = GROUPS.map((g) => {
+  const selected = new Set(state.filterGroups || []);
+  $("filters").innerHTML = tree.map((g) => {
     const label = g.id === "basket" ? `Корзина ${limit}` : g.label;
-    return `<button class="chip l1-${g.id} ${state.filterGroup === g.id ? "active" : ""}" data-g="${g.id}">${label}</button>`;
+    const on = selected.has(g.id);
+    return `<button class="chip l1-${g.id} ${on ? "active" : ""}" data-g="${g.id}" aria-pressed="${on}">${label}</button>`;
   }).join("");
   $("filters").querySelectorAll(".chip").forEach((btn) => {
     btn.addEventListener("click", () => {
-      state.filterGroup = btn.dataset.g;
-      state.selectedCats = [];
+      const id = btn.dataset.g;
+      const cur = new Set(state.filterGroups || []);
+      if (cur.has(id)) cur.delete(id);
+      else cur.add(id);
+      state.filterGroups = [...cur];
+      const allowed = new Set(groupCats());
+      state.selectedCats = state.selectedCats.filter((c) => allowed.has(c));
       renderFilters();
-      renderCatPicks();
       paintSlice();
     });
   });
-  renderCatPicks();
+  renderFilterNest();
 }
 
-function renderCatPicks() {
-  const an = state.analytics;
+function renderFilterNest() {
+  const nest = $("filter-nest");
+  if (!nest) return;
+  const nodes = selectedGroupNodes();
+  if (!nodes.length) {
+    nest.classList.add("hidden");
+    nest.innerHTML = "";
+    nest.removeAttribute("data-tone");
+    return;
+  }
+
+  nest.classList.remove("hidden");
+  const tone = nodes[0].tone || "gold";
+  nest.dataset.tone = tone;
+
+  const blocks = [];
+  const seenBlock = new Set();
+  const selectedIds = new Set(state.filterGroups || []);
+  nodes.forEach((node) => {
+    const children = node.children || [];
+    if (children.length) {
+      children.forEach((child) => {
+        // Не дублировать «Корзину», если она уже выбрана как корневой фильтр
+        if (selectedIds.has(child.id) && child.id !== node.id) return;
+        if (seenBlock.has(child.id)) return;
+        seenBlock.add(child.id);
+        blocks.push({
+          id: child.id,
+          label: child.label,
+          categories: child.categories || [],
+          parentId: node.id,
+        });
+      });
+    } else {
+      if (seenBlock.has(node.id)) return;
+      seenBlock.add(node.id);
+      blocks.push({
+        id: node.id,
+        label: node.label,
+        categories: node.categories || [],
+        parentId: node.id,
+      });
+    }
+  });
+
   const selected = new Set(state.selectedCats);
-  const pool = groupCats();
-  $("cat-picks").innerHTML = pool.map((c) =>
-    `<button class="chip l2 cat-pick ${selected.has(c) ? "active" : ""}" data-c="${c}">${c}</button>`
-  ).join("");
-  $("cat-picks").querySelectorAll(".chip").forEach((btn) => {
+  nest.innerHTML = blocks.map((block) => {
+    const cats = block.categories || [];
+    const chips = cats.map((c) =>
+      `<button type="button" class="chip l2 cat-pick ${selected.has(c) ? "active" : ""}" data-c="${c}">${c}</button>`
+    ).join("");
+    return `<div class="filter-subgroup" data-block="${block.id}">
+      <div class="filter-subgroup-head"><span>${block.label}</span></div>
+      <div class="filter-cats">${chips}</div>
+    </div>`;
+  }).join("");
+
+  nest.querySelectorAll(".cat-pick").forEach((btn) => {
     btn.addEventListener("click", () => {
       const cat = btn.dataset.c;
-      const already = state.selectedCats.includes(cat);
-      if (!already) state.selectedCats = [...state.selectedCats, cat];
-      else if (state.selectedCats.length > 1) state.selectedCats = state.selectedCats.filter((c) => c !== cat);
-      renderCatPicks();
+      if (state.selectedCats.includes(cat)) {
+        state.selectedCats = state.selectedCats.filter((c) => c !== cat);
+      } else {
+        state.selectedCats = [...state.selectedCats, cat];
+      }
+      renderFilterNest();
       paintSlice();
     });
   });
+}
+
+function deviationTooltipParts(fact, plan) {
+  if (plan == null || !Number.isFinite(plan) || plan === 0) {
+    return { text: `План: ${fact == null ? "—" : Number(fact).toFixed(1)}`, color: cssVar("--muted") };
+  }
+  const pct = ((fact - plan) / plan) * 100;
+  const sign = pct > 0 ? "+" : "";
+  const arrow = pct > 0 ? "▲" : pct < 0 ? "▼" : "·";
+  const color = pct > 0 ? "#3d9a6a" : pct < 0 ? "#c45c4a" : cssVar("--muted");
+  return {
+    text: `План: ${plan.toFixed(1)} · отклонение ${arrow} ${sign}${pct.toFixed(0)}%`,
+    color,
+  };
 }
 
 function paintSlice() {
   const an = state.analytics;
   if (!an) return;
-  const cats = activeCats();
+  themeCharts();
   const byCat = Object.fromEntries((an.monthly || []).map((r) => [r.category, r]));
   const closed = an.closed_month;
   const gold = factColor();
-  if (state.sliceMode === "month") {
-    const plan = MONTHS.map((_, i) => cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000);
-    const fact = MONTHS.map((_, i) => i < closed
+  const sky = cssVar("--sky") || "#8aa4c7";
+  const sage = cssVar("--sage") || "#8fbea8";
+  const muted = cssVar("--muted");
+  const indices = Array.from({ length: 12 }, (_, i) => i);
+  const labels = MONTHS.map((m) => m.slice(0, 3));
+  const overview = !(state.filterGroups || []).length;
+
+  if (overview) {
+    const inc = incomeCats();
+    const exp = expenseCats();
+    const sumFact = (cats, i) =>
+      i < closed ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000 : null;
+    const sumPlan = (cats, i) =>
+      cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000;
+
+    if (state.sliceDetail) {
+      const datasets = [];
+      inc.forEach((c, idx) => {
+        datasets.push({
+          label: c,
+          cat: c,
+          kind: "income",
+          data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
+          backgroundColor: DETAIL_PALETTE[idx % DETAIL_PALETTE.length],
+          borderRadius: idx === inc.length - 1 ? 4 : 0,
+          stack: "income",
+          order: 1,
+        });
+      });
+      exp.forEach((c, idx) => {
+        const color = DETAIL_PALETTE[(idx + 4) % DETAIL_PALETTE.length];
+        datasets.push({
+          label: c,
+          cat: c,
+          kind: "expense",
+          data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
+          backgroundColor: color,
+          borderRadius: idx === exp.length - 1 ? 4 : 0,
+          stack: "expense",
+          order: 1,
+        });
+      });
+      paintChart("chart-slice", {
+        type: "bar",
+        data: { labels, datasets },
+        options: {
+          maintainAspectRatio: false,
+          interaction: chartInteraction(),
+          plugins: {
+            legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
+            tooltip: {
+              enabled: true,
+              filter: (item) => item.raw != null,
+              callbacks: {
+                label: (ctx) => {
+                  const cat = ctx.dataset.cat;
+                  const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
+                  const bits = deviationTooltipParts(ctx.raw, plan);
+                  return `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)} · ${bits.text}`;
+                },
+                labelTextColor: (ctx) => {
+                  const cat = ctx.dataset.cat;
+                  const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
+                  return deviationTooltipParts(ctx.raw, plan).color;
+                },
+              },
+            },
+          },
+          scales: {
+            ...scaleOpts(),
+            x: { ...scaleOpts().x, stacked: true },
+            y: { ...scaleOpts().y, stacked: true, title: { display: true, text: "тыс. ₽", color: muted } },
+          },
+        },
+      });
+    } else {
+      paintChart("chart-slice", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            {
+              type: "bar",
+              label: "Доходы факт",
+              data: indices.map((i) => sumFact(inc, i)),
+              backgroundColor: sky,
+              borderRadius: 4,
+              order: 2,
+            },
+            {
+              type: "bar",
+              label: "Расходы факт",
+              data: indices.map((i) => sumFact(exp, i)),
+              backgroundColor: sage,
+              borderRadius: 4,
+              order: 2,
+            },
+            {
+              type: "line",
+              label: "План доходов",
+              data: indices.map((i) => sumPlan(inc, i)),
+              borderColor: muted,
+              backgroundColor: "transparent",
+              tension: 0.25,
+              borderWidth: 2,
+              pointRadius: 2,
+              pointHoverRadius: 5,
+              order: 1,
+            },
+            {
+              type: "line",
+              label: "План расходов",
+              data: indices.map((i) => sumPlan(exp, i)),
+              borderColor: muted,
+              backgroundColor: "transparent",
+              borderDash: [5, 4],
+              tension: 0.25,
+              borderWidth: 2,
+              pointRadius: 2,
+              pointHoverRadius: 5,
+              order: 1,
+            },
+          ],
+        },
+        options: {
+          maintainAspectRatio: false,
+          interaction: chartInteraction(),
+          plugins: {
+            legend: legendOpts(),
+            tooltip: { enabled: true, filter: (item) => item.raw != null },
+          },
+          scales: {
+            ...scaleOpts(),
+            x: { ...scaleOpts().x, stacked: false },
+            y: { ...scaleOpts().y, stacked: false, title: { display: true, text: "тыс. ₽", color: muted } },
+          },
+        },
+      });
+    }
+    return;
+  }
+
+  const cats = activeCats();
+  const planTotal = indices.map((i) => cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000);
+
+  if (state.sliceDetail && cats.length) {
+    const datasets = cats.map((c, idx) => ({
+      label: c,
+      cat: c,
+      data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
+      backgroundColor: DETAIL_PALETTE[idx % DETAIL_PALETTE.length],
+      borderRadius: idx === cats.length - 1 ? 4 : 0,
+      stack: "fact",
+      order: 1,
+    }));
+    paintChart("chart-slice", {
+      type: "bar",
+      data: { labels, datasets },
+      options: {
+        maintainAspectRatio: false,
+        interaction: chartInteraction(),
+        plugins: {
+          legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
+          tooltip: {
+            enabled: true,
+            filter: (item) => item.raw != null,
+            callbacks: {
+              label: (ctx) => {
+                const cat = ctx.dataset.cat;
+                const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
+                const bits = deviationTooltipParts(ctx.raw, plan);
+                return `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)} · ${bits.text}`;
+              },
+              labelTextColor: (ctx) => {
+                const cat = ctx.dataset.cat;
+                const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
+                return deviationTooltipParts(ctx.raw, plan).color;
+              },
+              footer: (items) => {
+                const i = items[0] && items[0].dataIndex;
+                if (i == null) return "";
+                const factSum = items.reduce((s, it) => s + (it.parsed.y || 0), 0);
+                const planSum = cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000;
+                return `Факт вместе: ${factSum.toFixed(1)} · план ${planSum.toFixed(1)} тыс.`;
+              },
+            },
+          },
+        },
+        scales: {
+          ...scaleOpts(),
+          x: { ...scaleOpts().x, stacked: true },
+          y: { ...scaleOpts().y, stacked: true, title: { display: true, text: "тыс. ₽", color: muted } },
+        },
+      },
+    });
+  } else {
+    const fact = indices.map((i) => (i < closed
       ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000
-      : null);
+      : null));
     paintChart("chart-slice", {
       type: "bar",
       data: {
-        labels: MONTHS.map((m) => m.slice(0, 3)),
+        labels,
         datasets: [
-          { label: "План, тыс.", data: plan, backgroundColor: planColor(), borderRadius: 4 },
+          { label: "План, тыс.", data: planTotal, backgroundColor: planColor(), borderRadius: 4 },
           { label: "Факт, тыс.", data: fact, backgroundColor: gold, borderRadius: 4 },
         ],
       },
       options: {
         maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } },
-        scales: scaleOpts(),
-      },
-    });
-  } else {
-    const rows = cats.map((c) => {
-      const plan = ((byCat[c] && byCat[c].plan) || []).slice(0, closed).reduce((a, b) => a + b, 0);
-      const fact = ((byCat[c] && byCat[c].fact) || []).slice(0, closed).reduce((a, b) => a + b, 0);
-      return { c, plan, fact, delta: fact - plan };
-    }).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 12);
-    paintChart("chart-slice", {
-      type: "bar",
-      data: {
-        labels: rows.map((r) => r.c),
-        datasets: [
-          { label: "План, тыс.", data: rows.map((r) => r.plan / 1000), backgroundColor: planColor(), borderRadius: 4 },
-          { label: "Факт, тыс.", data: rows.map((r) => r.fact / 1000), backgroundColor: gold, borderRadius: 4 },
-        ],
-      },
-      options: {
-        indexAxis: "y",
-        maintainAspectRatio: false,
-        plugins: { legend: { position: "bottom", labels: { boxWidth: 10 } } },
+        interaction: chartInteraction(),
+        plugins: {
+          legend: legendOpts(),
+          tooltip: { enabled: true },
+        },
         scales: {
-          x: { grid: { color: currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)" } },
-          y: { grid: { display: false }, ticks: { font: { size: 10 } } },
+          ...scaleOpts(),
+          y: { ...scaleOpts().y, title: { display: true, text: "тыс. ₽", color: muted } },
         },
       },
     });
   }
 }
 
+function bindShareControls() {
+  if (state.shareBound) return;
+  state.shareBound = true;
+  const forecast = $("show-forecast");
+  const drivers = $("show-drivers");
+  if (forecast) {
+    forecast.addEventListener("change", () => {
+      state.showForecast = forecast.checked;
+      paintShare();
+    });
+  }
+  if (drivers) {
+    drivers.addEventListener("change", () => {
+      state.showDrivers = drivers.checked;
+      paintShare();
+    });
+  }
+  const yearsReset = $("btn-asset-years-reset");
+  if (yearsReset) {
+    yearsReset.addEventListener("click", () => {
+      state.assetYears = [2024, 2025, 2026, 2027, 2028, 2029, 2030];
+      paintShare();
+    });
+  }
+  const filtersReset = $("btn-asset-filters-reset");
+  if (filtersReset) {
+    filtersReset.addEventListener("click", () => {
+      state.assetIds = null;
+      paintShare();
+    });
+  }
+  bindAssetYears();
+}
+
+function bindAssetYears() {
+  if (state.assetYearsBound) return;
+  state.assetYearsBound = true;
+  const box = $("asset-years");
+  if (!box) return;
+  box.querySelectorAll(".year-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const y = Number(btn.dataset.year);
+      const cur = state.assetYears || [];
+      if (cur.length === 1 && cur[0] === y) return;
+      if (cur.length === 7) {
+        state.assetYears = [y];
+      } else if (cur.includes(y)) {
+        state.assetYears = [y];
+      } else {
+        state.assetYears = [...cur, y].sort((a, b) => a - b);
+      }
+      paintShare();
+    });
+  });
+}
+
+function syncAssetYearChips() {
+  const box = $("asset-years");
+  if (!box) return;
+  const years = new Set(state.assetYears || []);
+  box.querySelectorAll(".year-chip").forEach((btn) => {
+    const on = years.has(Number(btn.dataset.year));
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
 async function loadShare() {
-  const data = await api("/api/share");
-  state.share = data;
-  paintShare();
+  try {
+    const data = await api("/api/share");
+    state.share = data;
+    bindShareControls();
+    const shareView = $("view-share");
+    if (shareView && !shareView.classList.contains("hidden")) {
+      paintShare();
+      requestAnimationFrame(() => {
+        ["chart-assets", "chart-savings", "chart-property", "chart-drivers"].forEach((id) => {
+          if (charts[id]) charts[id].resize();
+        });
+      });
+    }
+  } catch (err) {
+    const lead = $("share-source");
+    if (lead) lead.textContent = "Не удалось загрузить вклад: " + (err.message || err);
+    console.error(err);
+  }
+}
+
+function assetColor(i) {
+  return DETAIL_PALETTE[i % DETAIL_PALETTE.length];
 }
 
 function paintShare() {
   const data = state.share;
   if (!data) return;
-  $("share-source").textContent = data.source
-    ? `Источник: ${data.source}. Наличные от Саши входят в долю Маши.`
-    : "";
-  $("share-cash-kpis").innerHTML = [
-    `<div class="chip-kpi"><b>${mln(data.totals.sasha_cash)}</b><span>Саша</span></div>`,
-    `<div class="chip-kpi"><b>${mln(data.totals.masha_cash)}</b><span>Маша с наличными</span></div>`,
-    `<div class="chip-kpi"><b>${mln(data.totals.cash)}</b><span>вместе</span></div>`,
-  ].join("");
-  $("share-prop-kpis").innerHTML = [
-    `<div class="chip-kpi"><b>50 / 50</b><span>Таиланд</span></div>`,
-    `<div class="chip-kpi"><b>Саша</b><span>Петербург 100%</span></div>`,
-    `<div class="chip-kpi"><b>Маша</b><span>паркинг 100%</span></div>`,
-  ].join("");
-
-  const sasha = cssVar("--gold");
-  const masha = cssVar("--l2");
+  const tl = data.timeline;
   themeCharts();
+
+  if (tl) {
+    const k = tl.kpis || {};
+    $("share-hero-kpis").innerHTML = [
+      `<div class="chip-kpi"><b>${mln(k.now || 0)}</b><span>Сейчас</span></div>`,
+      `<div class="chip-kpi"><b>${mln(k.forecast_2030 || 0)}</b><span>Прогноз к 2030</span></div>`,
+      `<div class="chip-kpi"><b>${(k.delta_pct >= 0 ? "+" : "") + (k.delta_pct || 0)}%</b><span>+ к 2030</span></div>`,
+    ].join("");
+
+    const cur = tl.current || {};
+    $("share-cash-kpis").innerHTML = (tl.assets || []).map((a) =>
+      `<div class="chip-kpi"><b>${mln(cur[a.id] != null ? cur[a.id] : 0)}</b><span>${a.label}</span></div>`
+    ).join("");
+
+    const propKpis = $("share-prop-kpis");
+    if (propKpis) {
+      const props = data.property || tl.property_shares || [];
+      propKpis.innerHTML = props.map((p) => {
+        const shares = (p.shares || []).map((s) => `${s.owner} ${Math.round(s.share * 100)}%`).join(" · ");
+        return `<article class="prop-card">
+          <div class="prop-card-top">
+            <h4>${p.name}</h4>
+            <span class="prop-share">${shares}</span>
+          </div>
+          <p class="prop-note">${p.note || ""}</p>
+          <b class="prop-value">${money(p.value || 0)}</b>
+        </article>`;
+      }).join("");
+    }
+  } else if (data.totals) {
+    $("share-cash-kpis").innerHTML = [
+      `<div class="chip-kpi"><b>${mln(data.totals.cash || 0)}</b><span>Наличные</span></div>`,
+      `<div class="chip-kpi"><b>${mln(data.totals.masha_cash || 0)}</b><span>Накопления Маша</span></div>`,
+      `<div class="chip-kpi"><b>${mln(data.totals.sasha_cash || 0)}</b><span>Накопления Саша</span></div>`,
+      `<div class="chip-kpi"><b>${mln(data.totals.gold || 0)}</b><span>Золото</span></div>`,
+      `<div class="chip-kpi"><b>${mln(data.totals.spb || 0)}</b><span>Недвижимость Петербург</span></div>`,
+      `<div class="chip-kpi"><b>${mln(data.totals.phuket || 0)}</b><span>Недвижимость Пхукет</span></div>`,
+    ].join("");
+  }
+
+  if (tl) {
+    const filterActive = Array.isArray(state.assetIds);
+    const ids = new Set(filterActive ? state.assetIds : (tl.assets || []).map((a) => a.id));
+    $("asset-filters").innerHTML = tl.assets.map((a, i) =>
+      `<button type="button" class="chip ${filterActive && ids.has(a.id) ? "active" : ""}" data-asset="${a.id}" style="border-color:${assetColor(i)}">${a.label}</button>`
+    ).join("");
+    $("asset-filters").querySelectorAll(".chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.asset;
+        if (state.assetIds == null) {
+          state.assetIds = [id];
+        } else {
+          const cur = new Set(state.assetIds);
+          if (cur.has(id)) cur.delete(id);
+          else cur.add(id);
+          state.assetIds = cur.size ? [...cur] : null;
+        }
+        paintShare();
+      });
+    });
+
+    bindAssetYears();
+    syncAssetYearChips();
+    const yearSet = new Set(state.assetYears || []);
+    const years = (tl.years || []).filter((y) => yearSet.has(y));
+    const yearIdx = years.map((y) => tl.years.indexOf(y));
+    const factUntil = tl.fact_until;
+    if ($("show-forecast")) $("show-forecast").checked = state.showForecast;
+    if ($("show-drivers")) $("show-drivers").checked = state.showDrivers;
+
+    const activeAssets = tl.assets.filter((a) => ids.has(a.id));
+    const datasets = activeAssets.map((a) => {
+      const color = assetColor(tl.assets.findIndex((x) => x.id === a.id));
+      const series = yearIdx.map((idx) => {
+        const v = a.series[idx];
+        return v == null ? null : v / 1e6;
+      });
+      return {
+        label: a.label,
+        data: series.map((v, j) => (v == null ? null : (years[j] <= factUntil || state.showForecast ? v : null))),
+        borderColor: color,
+        backgroundColor: "transparent",
+        fill: false,
+        tension: 0.25,
+        borderWidth: 2,
+        pointRadius: 2,
+        pointHoverRadius: 5,
+        segment: {
+          borderDash: (ctx) => {
+            const y = years[ctx.p1DataIndex];
+            return y > factUntil ? [6, 4] : undefined;
+          },
+        },
+      };
+    });
+
+    paintChart("chart-assets", {
+      type: "line",
+      data: { labels: years.map(String), datasets },
+      options: {
+        maintainAspectRatio: false,
+        interaction: chartInteraction(),
+        plugins: {
+          legend: legendOpts(),
+          tooltip: {
+            enabled: true,
+            filter: (item) => item.raw != null,
+            callbacks: {
+              afterBody: (items) => {
+                const y = Number(items[0] && items[0].label);
+                return y > factUntil ? "прогноз" : "факт / оценка";
+              },
+              label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} млн ₽`,
+            },
+          },
+        },
+        scales: {
+          ...scaleOpts(),
+          y: {
+            ...scaleOpts().y,
+            stacked: false,
+            title: { display: true, text: "млн ₽", color: cssVar("--muted") },
+          },
+          x: { ...scaleOpts().x },
+        },
+      },
+    });
+
+    const wrap = $("drivers-wrap");
+    if (wrap) wrap.classList.toggle("hidden", !state.showDrivers);
+    if (state.showDrivers && tl.drivers) {
+      const driverKeys = [
+        { id: "usd", label: "USD, ₽" },
+        { id: "thb", label: "THB, ₽" },
+        { id: "gold", label: "Золото, тыс.₽/г" },
+        { id: "kuindzhi", label: "Индекс Куинджи" },
+        { id: "bangtao", label: "Индекс Bangtao" },
+      ];
+      paintChart("chart-drivers", {
+        type: "line",
+        data: {
+          labels: years.map(String),
+          datasets: driverKeys.map((d, i) => {
+            const series = (tl.drivers[d.id] || {}).series || [];
+            const scale = d.id === "gold" ? 1000 : 1;
+            const isIndex = d.id === "kuindzhi" || d.id === "bangtao";
+            return {
+              label: d.label,
+              data: yearIdx.map((idx) => {
+                const raw = series[idx];
+                if (raw == null) return null;
+                if (d.id === "bangtao" && raw <= 0) return null;
+                return raw / scale;
+              }),
+              borderColor: DETAIL_PALETTE[i],
+              backgroundColor: "transparent",
+              tension: 0.25,
+              borderWidth: 1.5,
+              pointRadius: 2,
+              pointHoverRadius: 4,
+              spanGaps: false,
+              yAxisID: isIndex ? "y1" : "y",
+            };
+          }),
+        },
+        options: {
+          maintainAspectRatio: false,
+          interaction: chartInteraction(),
+          plugins: {
+            legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
+            tooltip: { enabled: true, filter: (item) => item.raw != null },
+          },
+          scales: {
+            y: { ...scaleOpts().y, title: { display: true, text: "курс", color: cssVar("--muted") } },
+            y1: {
+              position: "right",
+              grid: { drawOnChartArea: false },
+              title: { display: true, text: "индекс", color: cssVar("--muted") },
+            },
+            x: scaleOpts().x,
+          },
+        },
+      });
+    }
+
+    $("share-assumptions").innerHTML = (tl.assumptions || []).map((t) => `<li>${t}</li>`).join("");
+    $("share-sources").innerHTML = (tl.sources || []).map((t) => `<li>${t}</li>`).join("");
+  }
+
+  const assets = (tl && tl.assets) || [];
+  const cur = (tl && tl.current) || {};
+  const donutLabels = assets.map((a) => a.label);
+  const donutData = assets.map((a) => cur[a.id] || 0);
   paintChart("chart-savings", {
     type: "doughnut",
     data: {
-      labels: ["Саша", "Маша"],
+      labels: donutLabels.length ? donutLabels : ["Нет данных"],
       datasets: [{
-        data: [data.totals.sasha_cash, data.totals.masha_cash],
-        backgroundColor: [sasha, masha],
+        data: donutData.length ? donutData : [1],
+        backgroundColor: donutLabels.map((_, i) => assetColor(i)),
         borderWidth: 0,
       }],
     },
     options: {
       maintainAspectRatio: false,
+      cutout: "55%",
+      interaction: chartInteraction(),
       plugins: {
-        legend: { position: "bottom", labels: { boxWidth: 10 } },
-        tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${money(ctx.raw)}` } },
+        legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
+        tooltip: { enabled: true, callbacks: { label: (ctx) => `${ctx.label}: ${money(ctx.raw)}` } },
       },
     },
   });
 
-  const cashSum = data.totals.cash_from_sasha || 0;
-  $("cash-from-sasha").innerHTML =
-    "<h3>Как сложилась доля Маши</h3>" +
-    `<div class="share-row"><span>Маша накопления</span><b>${money(data.totals.masha_own || 0)}</b></div>` +
-    `<div class="share-row"><span>Наличные от Саши, сумма лет</span><b>${money(cashSum)}</b></div>` +
-    `<div class="share-row"><span>Итого Маша</span><b>${money(data.totals.masha_cash)}</b></div>` +
-    "<h3>Наличные Маши от Саши по годам</h3>" +
-    data.cash_from_sasha.map((r) =>
-      `<div class="share-row"><span>${r.year || ""}</span><b>${money(r.amount)}</b><span class="conf">${r.comment || ""}</span></div>`
-    ).join("");
+  const liq = (tl && tl.liquid) || {};
+  const cashBox = $("cash-from-sasha");
+  if (cashBox) {
+    const gPrice = liq.gold_price
+      ? `${Number(liq.gold_price).toLocaleString("ru-RU", { maximumFractionDigits: 0 })} ₽/г`
+      : "";
+    const gGrams = liq.gold_grams != null ? `${liq.gold_grams} г` : "100 г";
+    cashBox.innerHTML =
+      "<h3>Ликвидность</h3>" +
+      `<div class="share-row"><span>Всего</span><b>${money(liq.liquid_total || 0)}</b></div>` +
+      `<div class="share-row"><span>Наличные</span><b>${money(liq.cash || 0)}</b></div>` +
+      `<div class="share-row"><span>Золото${gPrice ? ` · ${gGrams} × ${gPrice}` : ""}</span><b>${money(liq.gold || 0)}</b></div>` +
+      `<div class="share-row"><span>Накопления Маша</span><b>${money(liq.masha || 0)}</b></div>` +
+      `<div class="share-row"><span>Накопления Саша</span><b>${money(liq.sasha || 0)}</b></div>`;
+  }
 
-  const labels = data.property.map((p) => p.name.replace("Квартира ", "").replace("Парковочное место", "Паркинг"));
+  const props = data.property || (tl && tl.property_shares) || [];
+  const labels = props.map((p) => p.name.replace("Куинджи · ", "").replace("Bangtao · ", ""));
+  const sasha = cssVar("--gold");
+  const masha = cssVar("--l2");
   const onSasha = cssVar("--on-accent");
   const onMasha = cssVar("--l2-on");
   paintChart("chart-property", {
@@ -675,7 +1393,7 @@ function paintShare() {
       afterDatasetsDraw(chart) {
         const { ctx } = chart;
         ctx.save();
-        ctx.font = "600 13px Montserrat, sans-serif";
+        ctx.font = "600 12px Montserrat, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         chart.data.datasets.forEach((ds, di) => {
@@ -697,8 +1415,8 @@ function paintShare() {
       datasets: [
         {
           label: "Саша",
-          data: data.property.map((p) => {
-            const row = p.shares.find((s) => s.owner === "Саша");
+          data: props.map((p) => {
+            const row = (p.shares || []).find((s) => s.owner === "Саша");
             return row ? Math.round(row.share * 100) : 0;
           }),
           backgroundColor: sasha,
@@ -706,8 +1424,8 @@ function paintShare() {
         },
         {
           label: "Маша",
-          data: data.property.map((p) => {
-            const row = p.shares.find((s) => s.owner === "Маша");
+          data: props.map((p) => {
+            const row = (p.shares || []).find((s) => s.owner === "Маша");
             return row ? Math.round(row.share * 100) : 0;
           }),
           backgroundColor: masha,
@@ -717,11 +1435,18 @@ function paintShare() {
     },
     options: {
       maintainAspectRatio: false,
+      interaction: chartInteraction(),
       plugins: {
-        legend: { position: "bottom", labels: { boxWidth: 10 } },
+        legend: legendOpts(),
         tooltip: {
+          enabled: true,
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${ctx.raw}%`,
+            label: (ctx) => {
+              const p = props[ctx.dataIndex];
+              const share = ctx.raw;
+              const val = p ? Math.round((p.value || 0) * share / 100) : 0;
+              return `${ctx.dataset.label}: ${share}% · ${money(val)}`;
+            },
           },
         },
       },
@@ -739,10 +1464,8 @@ function paintShare() {
     },
   });
 
-  $("property-table").innerHTML = data.property.map((p) => {
-    const shares = p.shares.map((s) => `${s.owner} ${Math.round(s.share * 100)}%`).join(" · ");
-    return `<div class="share-row"><span>${p.name}</span><b>${shares}</b></div>`;
-  }).join("");
+  const propTable = $("property-table");
+  if (propTable) propTable.innerHTML = "";
 }
 
 function renderLedger(ledger) {
@@ -771,6 +1494,7 @@ function renderLedger(ledger) {
         }),
       });
       state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
+      await refreshDerived();
     });
   });
 }

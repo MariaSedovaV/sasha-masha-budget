@@ -15,6 +15,7 @@ from engine.categories import (
     ALL_CATEGORIES,
     EXPENSE_CATEGORIES,
     FILTER_GROUPS,
+    FILTER_TREE,
     INCOME_CATEGORIES,
     MONTHS_RU,
 )
@@ -102,19 +103,29 @@ def api_patch_ledger(body: CellPatch):
         fact=body.value if body.field == "fact" else None,
         source="manual",
     )
+    # Расширяем «закрытый месяц», если правим факт позже текущего
+    if body.field == "fact":
+        closed = int(get_meta(conn, "closed_month", "7") or 7)
+        if body.month > closed:
+            set_meta(conn, "closed_month", str(body.month))
+            closed = body.month
+    else:
+        closed = int(get_meta(conn, "closed_month", "7") or 7)
     conn.commit()
     conn.close()
-    return {"ok": True}
+    return {"ok": True, "closed_month": closed}
 
 
 @app.get("/api/analytics")
 def api_analytics(year: int = 2026):
     conn = init_db()
-    rows = ledger_rows(conn, year)
+    # План 2026–2028 нужен для событий/горизонта; факт — year
+    rows = ledger_rows(conn, None)
     closed = int(get_meta(conn, "closed_month", "7") or 7)
     data = build_insights(rows, year, closed)
     conn.close()
     data["filter_groups"] = FILTER_GROUPS
+    data["filter_tree"] = FILTER_TREE
     return data
 
 
@@ -135,6 +146,7 @@ def api_taxonomy():
         "income": INCOME_CATEGORIES,
         "expense": EXPENSE_CATEGORIES,
         "filter_groups": FILTER_GROUPS,
+        "filter_tree": FILTER_TREE,
         "months": MONTHS_RU[1:],
     }
 

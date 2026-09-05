@@ -109,9 +109,20 @@ def _gold() -> dict | None:
     return None
 
 
+def _fallback_gold() -> dict:
+    """Запасная учётная цена, если XML металлов ЦБ недоступен."""
+    return {"date": None, "value": 12240.0, "unit": "руб. за грамм", "fallback": True}
+
+
 def fetch_markets(force: bool = False) -> dict:
     cached = _load_cache()
-    if cached and cached.get("usd") and not force:
+    if (
+        cached
+        and cached.get("usd")
+        and cached.get("gold_gram")
+        and cached["gold_gram"].get("value")
+        and not force
+    ):
         if time.time() - cached.get("fetched_at", 0) < TTL_SEC:
             cached["cached"] = True
             cached["error"] = None
@@ -135,18 +146,25 @@ def fetch_markets(force: bool = False) -> dict:
             payload["error"] = f"Курсы валют: {exc}"
 
     try:
-        payload["gold_gram"] = _gold()
+        payload["gold_gram"] = _gold() or _fallback_gold()
     except Exception as exc:
+        payload["gold_gram"] = _fallback_gold()
         extra = f"Золото: {exc}"
         payload["error"] = f"{payload['error']}; {extra}" if payload["error"] else extra
 
     if payload.get("usd"):
-        payload["error"] = None
+        if payload.get("gold_gram") and payload["gold_gram"].get("value"):
+            payload["error"] = None
         _save_cache(payload)
         return payload
 
     if cached and cached.get("usd"):
         cached["cached"] = True
+        if not cached.get("gold_gram") or not cached["gold_gram"].get("value"):
+            cached["gold_gram"] = payload.get("gold_gram") or _fallback_gold()
         cached["error"] = payload.get("error") or "Показаны последние сохранённые курсы"
         return cached
+
+    if not payload.get("gold_gram"):
+        payload["gold_gram"] = _fallback_gold()
     return payload

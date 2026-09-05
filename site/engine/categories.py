@@ -87,12 +87,65 @@ LARGE_CATEGORIES = [
     "Абонемент в спорт-зал",
 ]
 
+OPERATING_INCOME = [
+    "Зарплата Саша",
+    "Премия Саша",
+    "Зарплата Маша",
+    "Премия Маша",
+    "Займы",
+    "Подарки",
+]
+
 FILTER_GROUPS = {
     "basket": BASKET_CATEGORIES,
     "large": LARGE_CATEGORIES,
     "expense": EXPENSE_CATEGORIES,
-    "income": INCOME_CATEGORIES,
+    "income": OPERATING_INCOME,
 }
+
+# Три корня; подгруппы только для быстрого выбора блоков (без списка всех статей)
+FILTER_TREE = [
+    {
+        "id": "basket",
+        "label": "Корзина",
+        "tone": "gold",
+        "categories": BASKET_CATEGORIES,
+        "children": [],
+    },
+    {
+        "id": "expense",
+        "label": "Все расходы",
+        "tone": "sage",
+        "categories": EXPENSE_CATEGORIES,
+        "children": [
+            {"id": "basket", "label": "Корзина", "categories": BASKET_CATEGORIES},
+            {"id": "large", "label": "Крупные", "categories": LARGE_CATEGORIES},
+        ],
+    },
+    {
+        "id": "income",
+        "label": "Доходы",
+        "tone": "sky",
+        "categories": OPERATING_INCOME,
+        "children": [
+            {
+                "id": "salary",
+                "label": "Зарплаты и премии",
+                "categories": [
+                    "Зарплата Саша",
+                    "Премия Саша",
+                    "Зарплата Маша",
+                    "Премия Маша",
+                ],
+            },
+            {
+                "id": "other_income",
+                "label": "Займы и подарки",
+                "categories": ["Займы", "Подарки"],
+            },
+        ],
+    },
+]
 
 BASKET_LIMIT = 230_000
 RESTAURANT_YEAR_LIMIT = 150_000
