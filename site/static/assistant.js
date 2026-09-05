@@ -261,10 +261,10 @@ html.assist-open,html.assist-open body{overflow:hidden}
     if (document.getElementById("assist-panel")) return;
     const wrap = document.createElement("div");
     wrap.innerHTML = `
-      <button type="button" class="assist-fab" id="assist-open">Помощник</button>
+      <button type="button" class="assist-fab" id="assist-open">Дворецкий</button>
       <section class="assist-panel hidden" id="assist-panel" hidden>
         <header class="assist-head">
-          <div><p class="eyebrow">семейный помощник</p><strong>Текстом или голосом</strong></div>
+          <div><p class="eyebrow">семейный дворецкий</p><strong>Текстом или голосом</strong></div>
           <button type="button" class="assist-close" id="assist-close">Закрыть</button>
         </header>
         <div class="assist-log" id="assist-log"></div>
