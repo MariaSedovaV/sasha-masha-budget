@@ -8,6 +8,7 @@
     pitanie: "https://mariasedovav.github.io/sasha-masha-pitanie/",
     zametki: "https://mariasedovav.github.io/sasha-masha-zametki/",
     goals: HOME + "#цели",
+    calendar: HOME + "#календарь",
   };
 
   const EXPENSE_CATS = [
@@ -168,6 +169,9 @@
     if (/(заметк|список дел|туду|todo)/.test(n) && !/(добав|запиш|напомн)/.test(n)) {
       return { say: already(LINKS.zametki) ? "Мы уже в заметках." : "Открываю заметки.", open: LINKS.zametki };
     }
+    if (/(календар|событи|встреч)/.test(n) && !/(добав|запиш)/.test(n)) {
+      return { say: "Открываю календарь.", calendar: true };
+    }
     if (/(цел[иь]|горизонт|желани)/.test(n) && !/(добав|новую цель)/.test(n)) {
       return { say: "Открываю цели.", goals: true };
     }
@@ -272,6 +276,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
           <button type="button" data-assist="открой бюджет">бюджет</button>
           <button type="button" data-assist="открой питание">питание</button>
           <button type="button" data-assist="открой заметки">заметки</button>
+          <button type="button" data-assist="открой календарь">календарь</button>
           <button type="button" data-assist="открой цели">цели</button>
           <button type="button" data-assist="добавь Маше купить молоко">дело Маше</button>
           <button type="button" data-assist="запиши 1500 в такси">трата</button>
@@ -326,6 +331,11 @@ html.assist-open,html.assist-open body{overflow:hidden}
       addMsg("bot", res.say);
       if (fromVoice) speak(res.say);
       if (res.theme) document.getElementById("theme-toggle")?.click();
+      if (res.calendar) {
+        const btn = document.getElementById("open-calendar");
+        if (btn) btn.click();
+        else location.href = LINKS.calendar;
+      }
       if (res.goals) {
         const btn = document.getElementById("open-goals");
         if (btn) btn.click();
