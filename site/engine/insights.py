@@ -377,9 +377,8 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
     conclusions = conclusions[:5]
 
     parking_fact = _sum(rows_y, ytd, ["Парковка"], "fact")
-    # FCF + оплаченное жильё (как раньше ~12,9 млн) — без вычета будущих месяцев плана
+    # FCF + оплаченное жильё (как раньше ~12,9 млн)
     net_worth = fact_closed + thailand_fact + parking_fact
-    fcf_eoy = fact_closed  # для текста рекомендаций: текущий факт как база
 
     recs = []
     if closed < 9 and thai_sep_plan >= 500_000:

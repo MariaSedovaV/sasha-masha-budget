@@ -77,6 +77,8 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
+const SNAPSHOT_VER = "21";
+
 function isLocalApi() {
   return location.hostname === "127.0.0.1" || location.hostname === "localhost";
 }
@@ -86,14 +88,18 @@ async function api(path, opts) {
   const urls = [];
   if (isLocalApi()) urls.push(path);
   if (!opts || !opts.method || opts.method === "GET") {
-    urls.push("static/snapshot/" + name + ".json");
+    urls.push("static/snapshot/" + name + ".json?v=" + SNAPSHOT_VER);
   }
   let last = new Error("Нет данных: " + path);
   for (const url of urls) {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(url, { ...opts, signal: ctrl.signal });
+      const res = await fetch(url, {
+        ...opts,
+        signal: ctrl.signal,
+        cache: "no-store",
+      });
       clearTimeout(timer);
       if (res.ok) {
         const data = await res.json();
