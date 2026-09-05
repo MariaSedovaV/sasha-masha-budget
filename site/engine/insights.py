@@ -377,14 +377,9 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
     conclusions = conclusions[:5]
 
     parking_fact = _sum(rows_y, ytd, ["Парковка"], "fact")
-    # Опер. прогноз до конца года: факт сейчас + план нетто сен–дек + жильё уже оплаченное
-    plan_rest = 0.0
-    if excel_plan and excel_plan.get("monthly"):
-        plan_rest = sum(excel_plan["monthly"][m - 1] for m in range(closed + 1, 13))
-    else:
-        plan_rest = sum(_month_net(rows_y, m, "plan", core_income=True) for m in range(closed + 1, 13))
-    fcf_eoy = fact_closed + plan_rest
-    net_worth = fcf_eoy + thailand_fact + parking_fact
+    # FCF + оплаченное жильё (как раньше ~12,9 млн) — без вычета будущих месяцев плана
+    net_worth = fact_closed + thailand_fact + parking_fact
+    fcf_eoy = fact_closed  # для текста рекомендаций: текущий факт как база
 
     recs = []
     if closed < 9 and thai_sep_plan >= 500_000:
@@ -431,7 +426,7 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
             "tag": "цель 12 млн",
             "title": "12 млн с учётом жилья к концу года",
             "text": (
-                f"Опер. прогноз: FCF к дек. {_mln(fcf_eoy)} + Таиланд оплаченный {_mln(thailand_fact)} "
+                f"FCF {_mln(fact_closed)} + Таиланд оплаченный {_mln(thailand_fact)} "
                 f"+ паркинг {_mln(parking_fact)} = {_mln(net_worth)}"
                 + (f" (до цели ещё {_mln(gap)})." if gap > 0 else " — цель уже перекрыта по этой метрике.")
             ),

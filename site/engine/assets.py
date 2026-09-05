@@ -80,7 +80,7 @@ def _month_net_core(rows, month: int, field: str) -> float:
 
 
 def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -> dict:
-    """Ликвидность из КУМУЛЯТИВНЫЙ ИТОГ; накопления — старт + потоки FCF факт."""
+    """Ликвидность: FCF cumul + позиции из FCF факт (старт + потоки)."""
     ytd = list(range(1, closed_month + 1))
     excel_fact = read_fact_cumul_series()
     if excel_fact and closed_month >= 1:
@@ -89,28 +89,21 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
         cumul = START_CAPITAL + sum(_month_net_core(rows, m, "fact") for m in ytd)
 
     balances = read_savings_balances(closed_month)
+    gold = GOLD_GRAMS * gold_price
     if balances:
         masha = max(0.0, balances["masha"])
         sasha = max(0.0, balances["sasha"])
+        cash = max(0.0, balances.get("cash", 0.0))
+        # Остаток кумулятива FCF после явных позиций — тоже в наличные
+        allocated = gold + masha + sasha + cash
+        if cumul > allocated:
+            cash += cumul - allocated
     else:
         sasha = _sum_cat(
             rows, ytd, ["Зарплата Саша", "Премия Саша", "Продажа квартиры Саша"], "fact"
         )
         masha = _sum_cat(rows, ytd, ["Зарплата Маша", "Премия Маша"], "fact")
-
-    gold = GOLD_GRAMS * gold_price
-    allocated = gold + masha + sasha
-    if allocated > cumul and cumul > 0:
-        rest = max(0.0, cumul - gold)
-        total_sav = masha + sasha
-        if total_sav > 0:
-            masha = rest * (masha / total_sav)
-            sasha = rest * (sasha / total_sav)
-        else:
-            masha = sasha = 0.0
-        cash = 0.0
-    else:
-        cash = max(0.0, cumul - allocated)
+        cash = max(0.0, cumul - gold - masha - sasha)
 
     return {
         "liquid_total": cumul,
@@ -120,6 +113,8 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
         "gold_price": gold_price,
         "sasha": sasha,
         "masha": masha,
+        "sasha_savings": (balances or {}).get("sasha_savings"),
+        "sasha_invest": (balances or {}).get("sasha_invest"),
         "sasha_income_ytd": _sum_cat(
             rows, ytd, ["Зарплата Саша", "Премия Саша", "Продажа квартиры Саша"], "fact"
         ),
@@ -237,13 +232,13 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         },
         {
             "name": "Bangtao · So Origin",
-            "value": 0,
+            "value": round(phuket_market(2026) or THAI_BUY),
             "buy": THAI_BUY,
             "buy_year": 2026,
             "shares": [{"owner": "Маша", "share": 0.5}, {"owner": "Саша", "share": 0.5}],
             "note": (
-                f"котлован 2026 · стройка с конца 2026 · в «Сейчас» не входит · "
-                f"учёт с {PHUKET_COUNT_FROM} · оплачено {thai_paid/1e6:.2f} из {THAI_BUY/1e6:.0f} млн"
+                f"рынок на котловане {THAI_BUY/1e6:.0f} млн · оплачено {thai_paid/1e6:.2f} млн · "
+                f"в портфеле «Сейчас» с {PHUKET_COUNT_FROM}"
             ),
         },
     ]
@@ -281,17 +276,17 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             },
         },
         "assumptions": [
-            f"Золото: {GOLD_GRAMS:.0f} г × учётная цена ЦБ ({gold_px[2026]:,.0f} ₽/г).",
-            "Ликвидность FCF = КУМУЛЯТИВНЫЙ ИТОГ на листе FCF факт.",
-            "Накопления Маша/Саша = старт (кол. B) + сумма месячных потоков (стр. 18/19), без вычета парковки из баланса Маши.",
-            "Куинджи: 18,5 + 1,45 млн с 2024, оценка = покупка × индекс.",
-            f"Пхукет So Origin: продажи с дек 2025, котлован/стройка с конца 2026; в портфеле только с {PHUKET_COUNT_FROM}.",
-            "2027–2030 — консервативный сценарий, не инвестсовет.",
+            f"Золото: {GOLD_GRAMS:.0f} г × цена ЦБ ({gold_px[2026]:,.0f} ₽/г).",
+            "Ликвидность «Всего» = КУМУЛЯТИВНЫЙ ИТОГ FCF факт.",
+            "Маша = старт + потоки «Маша накопления»; Саша = накопления + инвестиции; наличные = «Доллары дома» + остаток кумулятива.",
+            "Куинджи: покупка × индекс к 2026.",
+            f"Пхукет: рынок на котловане; в сумме «Сейчас» с {PHUKET_COUNT_FROM}.",
+            "2027–2030 — сценарий, не инвестсовет.",
         ],
         "sources": [
-            "FCF 2026 ФАКТ — кумулятив и накопления",
-            "ЖК «Куинджи» (RBI) — ориентиры лотов",
-            "So Origin Bangtao Beach — freehold, ~200 м от пляжа",
+            "FCF 2026 ФАКТ — кумулятив, накопления, доллары, инвестиции",
+            "ЖК «Куинджи» (RBI)",
+            "So Origin Bangtao Beach — freehold",
             f"ЦБ РФ — USD, THB, золото ({gold_px[2026]:,.0f} ₽/г)",
         ],
     }

@@ -86,29 +86,35 @@ def read_fact_cumul_series(path: Path | None = None) -> dict | None:
 
 
 def read_savings_balances(closed_month: int, path: Path | None = None) -> dict | None:
-    """Накопления = старт (кол. B) + сумма месячных потоков (стр. 18/19).
+    """Ликвидные позиции = старт (кол. B) + сумма месячных потоков.
 
-    Не берём «сырую» ячейку баланса стр. 13 за август: в Excel там
-    =I13+J18−J30 (парковка вычитается из накоплений Маши), из‑за чего
-    остаток падает до ~46 тыс. при реальных ~770–800 тыс. до учёта парковки.
+    Маша накопления: стр. 13/18 (без вычета парковки из формулы августа).
+    Саша накопления: стр. 14/19 + Саша инвестиции 17/22 (как в «Разделение_деньги»).
+    Наличные: Доллары дома стр. 15/20.
     """
     wb, excel = _wb(path)
     if not wb or FACT_SHEET not in wb.sheetnames:
         return None
     ws = wb[FACT_SHEET]
-    masha0 = _num(ws.cell(FACT_MASHA_BAL_ROW, 2).value)
-    sasha0 = _num(ws.cell(FACT_SASHA_BAL_ROW, 2).value)
-    masha_flow = sum(
-        _num(ws.cell(FACT_MASHA_FLOW_ROW, _fact_col(m)).value)
-        for m in range(1, closed_month + 1)
-    )
-    sasha_flow = sum(
-        _num(ws.cell(FACT_SASHA_FLOW_ROW, _fact_col(m)).value)
-        for m in range(1, closed_month + 1)
-    )
+
+    def start_plus_flows(bal_row: int, flow_row: int) -> float:
+        start = _num(ws.cell(bal_row, 2).value)
+        flows = sum(
+            _num(ws.cell(flow_row, _fact_col(m)).value)
+            for m in range(1, closed_month + 1)
+        )
+        return start + flows
+
+    masha = start_plus_flows(FACT_MASHA_BAL_ROW, FACT_MASHA_FLOW_ROW)
+    sasha_sav = start_plus_flows(FACT_SASHA_BAL_ROW, FACT_SASHA_FLOW_ROW)
+    sasha_inv = start_plus_flows(17, 22)  # Саша инвестиции
+    cash = start_plus_flows(15, 20)  # Доллары дома
     return {
-        "masha": masha0 + masha_flow,
-        "sasha": sasha0 + sasha_flow,
+        "masha": masha,
+        "sasha": sasha_sav + sasha_inv,
+        "sasha_savings": sasha_sav,
+        "sasha_invest": sasha_inv,
+        "cash": cash,
         "excel": excel.name if excel else None,
         "method": "start_plus_flows",
     }

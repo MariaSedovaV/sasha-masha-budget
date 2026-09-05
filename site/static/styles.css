@@ -668,25 +668,189 @@ td select { width: 100%; padding: 4px; }
 .view-toggle button.ghost:hover { color: var(--ink); border-color: var(--gold); }
 
 .share-view {
-  overflow: auto;
-  padding: 12px 14px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  height: 100%;
+  max-height: calc(100dvh - 108px);
+  overflow: hidden;
+  padding: 8px 12px 10px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  box-sizing: border-box;
 }
 .share-hero {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-  padding: 4px 2px 2px;
+  gap: 12px;
+  align-items: center;
+  padding: 0 2px;
+  flex-shrink: 0;
 }
 .share-title {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.03em;
-  margin-bottom: 4px;
+  margin: 0;
 }
+.share-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.9fr);
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+.share-chart-panel {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.share-chart-panel .panel-head { margin-bottom: 4px; flex-shrink: 0; }
+.share-chart-lg {
+  flex: 1 1 auto;
+  min-height: 160px;
+  height: auto;
+}
+.share-chart-sm {
+  flex: 0 0 140px;
+  height: 140px;
+  margin-top: 6px;
+}
+.share-side {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.share-side > .panel {
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+}
+.share-donut {
+  flex: 1 1 auto;
+  min-height: 110px;
+  max-height: 150px;
+  height: auto;
+}
+.share-chart {
+  flex: 1 1 auto;
+  min-height: 90px;
+  max-height: 130px;
+  height: auto;
+}
+.share-table {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  overflow: auto;
+  flex: 0 1 auto;
+  max-height: 42%;
+}
+.share-table h3 { font-size: 11px; color: var(--muted); margin: 0 0 2px; }
+.share-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 6px;
+  align-items: start;
+  font-size: 10px;
+  padding: 5px 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.prop-card {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 7px 9px;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.prop-note {
+  margin: 2px 0 4px;
+  font-size: 9px;
+  color: var(--muted);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.prop-value { font-size: 13px; }
+#share-prop-kpis {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  margin-bottom: 6px;
+  min-width: 0;
+  overflow: auto;
+  flex: 0 1 auto;
+  max-height: 48%;
+}
+.share-notes {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  width: 100%;
+  max-height: 16vh;
+  overflow: hidden;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+.share-notes > h2 { font-size: 12px; margin: 0 0 4px; }
+.share-notes-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 16px;
+  min-width: 0;
+  width: 100%;
+  max-height: calc(16vh - 28px);
+  overflow: auto;
+  padding-right: 2px;
+}
+.share-notes-grid > div {
+  min-width: 0;
+}
+.notes-col-title {
+  font-size: 10px;
+  color: var(--muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.share-notes-grid ul {
+  margin: 0;
+  padding-left: 14px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.share-notes-grid li + li { margin-top: 3px; }
+.portfolio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 6px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.asset-now-kpis { max-width: 100%; }
+.asset-now-kpis .chip-kpi { min-width: 72px; padding: 4px 6px; }
+.asset-now-kpis .chip-kpi b { font-size: 11px; }
+.asset-now-kpis .chip-kpi span { font-size: 9px; max-width: 7rem; }
 .share-lead { max-width: 52ch; }
 .share-toolbar {
   display: flex;
@@ -724,174 +888,6 @@ td select { width: 100%; padding: 4px; }
   cursor: pointer;
 }
 .toggle-pill input { accent-color: var(--gold); }
-.share-main-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.9fr);
-  gap: 10px;
-  min-height: 0;
-}
-.share-chart-panel { min-height: 420px; }
-.share-chart-lg { height: 340px; min-height: 280px; }
-.share-chart-sm { height: 160px; margin-top: 10px; }
-.share-side {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-}
-.share-side > .panel {
-  flex: 0 0 auto;
-  overflow: hidden;
-  min-width: 0;
-}
-.share-donut {
-  height: 220px;
-  min-height: 180px;
-  max-height: 240px;
-  flex: 0 0 auto;
-}
-.share-chart { height: 160px; flex: 0 0 auto; max-height: 180px; }
-.share-table {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-  overflow: hidden;
-}
-.share-table h3 { font-size: 12px; color: var(--muted); margin: 0 0 2px; }
-.share-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 8px;
-  align-items: start;
-  font-size: 11px;
-  padding: 7px 9px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  min-width: 0;
-}
-.share-row > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  white-space: normal;
-  line-height: 1.3;
-}
-.share-row > b {
-  flex-shrink: 0;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.share-row .conf {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 10px;
-  white-space: normal;
-  overflow: visible;
-}
-#share-prop-kpis {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-  margin-bottom: 10px;
-  min-width: 0;
-  overflow: hidden;
-}
-.prop-card {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 12px;
-  min-width: 0;
-  overflow: hidden;
-  box-sizing: border-box;
-}
-.prop-card-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  align-items: flex-start;
-  min-width: 0;
-}
-.prop-card h4 {
-  font-size: 12px;
-  font-weight: 600;
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.prop-share {
-  font-size: 11px;
-  color: var(--gold-2);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.prop-note {
-  margin: 4px 0 6px;
-  font-size: 10px;
-  color: var(--muted);
-  line-height: 1.35;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.prop-value {
-  display: block;
-  font-size: 15px;
-  color: var(--ink);
-  letter-spacing: -0.02em;
-}
-.share-notes {
-  position: relative;
-  z-index: 1;
-  overflow: visible;
-  clear: both;
-  min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-}
-.share-notes-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px 20px;
-  margin-top: 8px;
-  min-width: 0;
-  width: 100%;
-}
-.share-notes-grid > div {
-  min-width: 0;
-  overflow: hidden;
-}
-.notes-col-title {
-  font-size: 11px;
-  color: var(--muted);
-  margin: 0 0 6px;
-  font-weight: 600;
-}
-.share-notes-grid ul {
-  margin: 0;
-  padding-left: 16px;
-  padding-right: 2px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  hyphens: auto;
-}
-.share-notes-grid li + li { margin-top: 5px; }
-
-.portfolio-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-  min-width: 0;
-}
 .portfolio-filters-row {
   display: flex;
   flex-wrap: wrap;
@@ -903,11 +899,38 @@ td select { width: 100%; padding: 4px; }
   flex: 1 1 auto;
   min-width: 0;
 }
-.asset-year-picks {
-  margin: 0;
+.asset-year-picks { margin: 0; }
+.share-chart-panel .share-toggles { margin-top: 0; }
+.share-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.25;
 }
-.share-chart-panel .share-toggles {
-  margin-top: 2px;
+.share-row > b {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 11px;
+}
+.prop-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  align-items: flex-start;
+  min-width: 0;
+}
+.prop-card h4 {
+  font-size: 11px;
+  font-weight: 600;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.prop-share {
+  font-size: 10px;
+  color: var(--gold-2);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .year-picks {
@@ -957,11 +980,24 @@ td select { width: 100%; padding: 4px; }
   .shell { height: auto; min-height: 100dvh; overflow: auto; }
   .dash-body, .data-grid, .ticker, .share-main-grid, .share-notes-grid { grid-template-columns: 1fr; }
   .dash { height: auto; }
-  .chart-box, .share-chart, .share-chart-lg { height: 240px; }
-  .share-chart-lg { min-height: 220px; }
+  .share-view {
+    height: auto;
+    max-height: none;
+    overflow: auto;
+    grid-template-rows: auto auto auto;
+  }
+  .share-main-grid { overflow: visible; }
+  .share-side {
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  .share-side > .panel { overflow: visible; }
+  .share-donut { max-height: 200px; min-height: 160px; }
+  .share-chart { max-height: 160px; min-height: 120px; }
+  .share-chart-lg { min-height: 220px; height: 240px; }
+  .share-notes { max-height: none; overflow: visible; }
+  .share-notes-grid { max-height: none; overflow: visible; }
   .side { grid-template-rows: auto; }
-  .share-side { overflow: visible; }
-  .share-notes-grid { gap: 16px; }
 }
 
 @media (max-width: 720px) {
@@ -994,10 +1030,9 @@ td select { width: 100%; padding: 4px; }
   select, input { font-size: 16px; }
   .ledger input { width: 72px; font-size: 16px; }
   .portfolio-controls { gap: 10px; }
-  .asset-year-picks, .portfolio-filters-row, .share-toggles {
-    width: 100%;
-  }
-  .share-donut { height: 200px; min-height: 160px; }
-  .share-notes-grid ul { font-size: 12px; }
+  .asset-year-picks, .portfolio-filters-row, .share-toggles { width: 100%; }
+  .share-donut { height: 180px; max-height: 180px; }
+  .share-notes-grid ul { font-size: 11px; }
   .chip-kpi span { max-width: none; }
+  .share-table, #share-prop-kpis { max-height: none; }
 }

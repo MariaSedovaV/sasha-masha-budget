@@ -1281,37 +1281,34 @@ function paintShare() {
     const wrap = $("drivers-wrap");
     if (wrap) wrap.classList.toggle("hidden", !state.showDrivers);
     if (state.showDrivers && tl.drivers) {
+      // Курсы 2024→2030 независимо от фильтра годов портфеля
+      const fxYears = tl.years || [];
+      const fxIdx = fxYears.map((_, i) => i);
       const driverKeys = [
-        { id: "usd", label: "USD, ₽" },
-        { id: "thb", label: "THB, ₽" },
-        { id: "gold", label: "Золото, тыс.₽/г" },
-        { id: "kuindzhi", label: "Индекс Куинджи" },
-        { id: "bangtao", label: "Индекс Bangtao" },
+        { id: "usd", label: "Доллар, ₽", axis: "y" },
+        { id: "thb", label: "Бат, ₽", axis: "y" },
+        { id: "gold", label: "Золото, тыс.₽/г", axis: "y1", scale: 1000 },
       ];
       paintChart("chart-drivers", {
         type: "line",
         data: {
-          labels: years.map(String),
+          labels: fxYears.map(String),
           datasets: driverKeys.map((d, i) => {
             const series = (tl.drivers[d.id] || {}).series || [];
-            const scale = d.id === "gold" ? 1000 : 1;
-            const isIndex = d.id === "kuindzhi" || d.id === "bangtao";
+            const scale = d.scale || 1;
             return {
               label: d.label,
-              data: yearIdx.map((idx) => {
+              data: fxIdx.map((idx) => {
                 const raw = series[idx];
-                if (raw == null) return null;
-                if (d.id === "bangtao" && raw <= 0) return null;
-                return raw / scale;
+                return raw == null ? null : raw / scale;
               }),
               borderColor: DETAIL_PALETTE[i],
               backgroundColor: "transparent",
               tension: 0.25,
-              borderWidth: 1.5,
-              pointRadius: 2,
-              pointHoverRadius: 4,
-              spanGaps: false,
-              yAxisID: isIndex ? "y1" : "y",
+              borderWidth: 2,
+              pointRadius: 3,
+              pointHoverRadius: 5,
+              yAxisID: d.axis,
             };
           }),
         },
@@ -1320,14 +1317,27 @@ function paintShare() {
           interaction: chartInteraction(),
           plugins: {
             legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
-            tooltip: { enabled: true, filter: (item) => item.raw != null },
+            tooltip: {
+              enabled: true,
+              filter: (item) => item.raw != null,
+              callbacks: {
+                label: (ctx) => {
+                  const v = Number(ctx.raw);
+                  if (ctx.dataset.yAxisID === "y1") return `${ctx.dataset.label}: ${v.toFixed(2)}`;
+                  return `${ctx.dataset.label}: ${v.toFixed(3)}`;
+                },
+              },
+            },
           },
           scales: {
-            y: { ...scaleOpts().y, title: { display: true, text: "курс", color: cssVar("--muted") } },
+            y: {
+              ...scaleOpts().y,
+              title: { display: true, text: "USD / THB, ₽", color: cssVar("--muted") },
+            },
             y1: {
               position: "right",
               grid: { drawOnChartArea: false },
-              title: { display: true, text: "индекс", color: cssVar("--muted") },
+              title: { display: true, text: "золото", color: cssVar("--muted") },
             },
             x: scaleOpts().x,
           },
@@ -1341,15 +1351,16 @@ function paintShare() {
 
   const assets = (tl && tl.assets) || [];
   const cur = (tl && tl.current) || {};
-  const donutLabels = assets.map((a) => a.label);
-  const donutData = assets.map((a) => cur[a.id] || 0);
+  const donutItems = assets
+    .map((a, i) => ({ label: a.label, value: cur[a.id] || 0, color: assetColor(i) }))
+    .filter((x) => x.value > 0);
   paintChart("chart-savings", {
     type: "doughnut",
     data: {
-      labels: donutLabels.length ? donutLabels : ["Нет данных"],
+      labels: donutItems.length ? donutItems.map((x) => x.label) : ["Нет данных"],
       datasets: [{
-        data: donutData.length ? donutData : [1],
-        backgroundColor: donutLabels.map((_, i) => assetColor(i)),
+        data: donutItems.length ? donutItems.map((x) => x.value) : [1],
+        backgroundColor: donutItems.length ? donutItems.map((x) => x.color) : [cssVar("--muted")],
         borderWidth: 0,
       }],
     },
