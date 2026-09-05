@@ -94,10 +94,10 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
         masha = max(0.0, balances["masha"])
         sasha = max(0.0, balances["sasha"])
         cash = max(0.0, balances.get("cash", 0.0))
-        # Остаток кумулятива FCF после явных позиций — тоже в наличные
+        # Остаток кумулятива FCF после явных позиций — в накопления Маши
         allocated = gold + masha + sasha + cash
         if cumul > allocated:
-            cash += cumul - allocated
+            masha += cumul - allocated
     else:
         sasha = _sum_cat(
             rows, ytd, ["Зарплата Саша", "Премия Саша", "Продажа квартиры Саша"], "fact"
@@ -278,7 +278,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         "assumptions": [
             f"Золото: {GOLD_GRAMS:.0f} г × цена ЦБ ({gold_px[2026]:,.0f} ₽/г).",
             "Ликвидность «Всего» = КУМУЛЯТИВНЫЙ ИТОГ FCF факт.",
-            "Маша = старт + потоки «Маша накопления»; Саша = накопления + инвестиции; наличные = «Доллары дома» + остаток кумулятива.",
+            "Маша = старт + потоки «Маша накопления» + остаток кумулятива; Саша = накопления + инвестиции; наличные = «Доллары дома».",
             "Куинджи: покупка × индекс к 2026.",
             f"Пхукет: рынок на котловане; в сумме «Сейчас» с {PHUKET_COUNT_FROM}.",
             "2027–2030 — сценарий, не инвестсовет.",
