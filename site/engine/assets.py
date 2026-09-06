@@ -3,7 +3,7 @@
 - Золото: 100 г с апреля 2025 × учётная цена ЦБ
 - Наличные с декабря 2025; накопления Маша/Саша с января 2026
 - Петербург: квартира и паркинг с мая 2024
-- Пхукет в портфеле с марта 2026 (доля = оплачено / контракт × рынок)
+- Пхукет в портфеле с марта 2026 по контрактной стоимости (старт продаж)
 - Горизонт: май 2024 — декабрь 2040, помесячно
 """
 
@@ -21,9 +21,8 @@ SPB_APT_BUY = 18_500_000.0
 SPB_APT_FROM = (2024, 5)
 SPB_PARKING_BUY = 1_450_000.0
 SPB_PARKING_FROM = (2024, 5)
-THAI_BUY = 21_000_000.0
+THAI_BUY = 20_922_179.0  # контракт / старт продаж, март 2026, ₽
 THAI_FROM = (2026, 3)
-THAI_PAID_UNTIL = (2029, 12)
 GOLD_FROM = (2025, 4)
 CASH_FROM = (2025, 12)
 MASHA_FROM = (2026, 1)
@@ -224,30 +223,11 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
     liq = liquid_from_ledger(rows, closed_month, gold_px[2026])
 
     thai_paid_now = _sum_cat(rows, list(range(1, closed_month + 1)), ["Квартира Тайланд"], "fact")
-    thai_paid_by_m = {}
-    running = 0.0
-    for m in range(1, 13):
-        running += _sum_cat(rows, [m], ["Квартира Тайланд"], "fact")
-        thai_paid_by_m[m] = running
 
     closed = (2026, closed_month)
     months = _iter_months(MONTHS_FROM, (HORIZON_END, 12))
     labels = [f"{m:02d}.{y}" for y, m in months]
     now_index = next((i for i, ym in enumerate(months) if ym == closed), 0)
-    base_thb = thb[2026] or 1.0
-
-    def paid_at(year: int, month: int) -> float:
-        if not _at_or_after(year, month, THAI_FROM):
-            return 0.0
-        if year == 2026 and month <= closed_month:
-            return float(thai_paid_by_m.get(month, thai_paid_now))
-        if (year, month) <= closed:
-            return 0.0
-        t0 = _ym_key(*closed)
-        t1 = _ym_key(*THAI_PAID_UNTIL)
-        t = _ym_key(year, month)
-        progress = min(1.0, max(0.0, (t - t0) / max(1, t1 - t0)))
-        return thai_paid_now + max(0.0, THAI_BUY - thai_paid_now) * progress
 
     def spb_apt_at(year: int, month: int) -> float | None:
         if not _at_or_after(year, month, SPB_APT_FROM):
@@ -265,18 +245,17 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         if not _at_or_after(year, month, THAI_FROM):
             return None
         idx_now = _year_end_at(BANGTAO_INDEX, year, month)
-        base_idx = BANGTAO_INDEX[THAI_FROM[0]] or 100.0
-        if base_idx <= 0 or idx_now <= 0:
+        idx_start = _year_end_at(BANGTAO_INDEX, THAI_FROM[0], THAI_FROM[1])
+        if idx_start <= 0 or idx_now <= 0:
             return None
-        fx = _year_end_at(thb, year, month) / base_thb
-        return THAI_BUY * (idx_now / base_idx) * fx
+        thb_now = _year_end_at(thb, year, month)
+        thb_start = _year_end_at(thb, THAI_FROM[0], THAI_FROM[1])
+        fx = (thb_now / thb_start) if thb_start else 1.0
+        return THAI_BUY * (idx_now / idx_start) * fx
 
     def phuket_equity_at(year: int, month: int) -> float | None:
-        market = phuket_market_at(year, month)
-        if market is None:
-            return None
-        paid = paid_at(year, month)
-        return market * min(1.0, paid / THAI_BUY) if THAI_BUY else None
+        # Контракт подписан: на графике — полная рыночная стоимость, не доля оплаты.
+        return phuket_market_at(year, month)
 
     def gold_at(year: int, month: int) -> float | None:
         if not _at_or_after(year, month, GOLD_FROM):
@@ -332,7 +311,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "from_month": THAI_FROM[1],
             "series": rnd_series(phuket_s),
             "note": (
-                f"So Origin Bangtao · с марта 2026 · оплачено {thai_paid_now/1e6:.2f} из {THAI_BUY/1e6:.0f} млн"
+                f"So Origin Bangtao · контракт март 2026 · {THAI_BUY/1e6:.2f} млн ₽"
             ),
         },
     ]
@@ -379,8 +358,8 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "buy_year": 2026,
             "shares": [{"owner": "Маша", "share": 0.5}, {"owner": "Саша", "share": 0.5}],
             "note": (
-                f"покупка март 2026 · рынок {phuket_mkt_now/1e6:.1f} млн · "
-                f"в портфеле доля оплаты {thai_paid_now/1e6:.2f} из {THAI_BUY/1e6:.0f} млн"
+                f"контракт март 2026 · {THAI_BUY:,.0f} ₽ · "
+                f"сейчас {phuket_mkt_now/1e6:.2f} млн · оплачено {thai_paid_now/1e6:.2f} млн"
             ),
         },
     ]
@@ -439,7 +418,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             f"Золото: куплено в апреле 2025, {GOLD_GRAMS:.0f} г × цена ЦБ на закрытый месяц ({gold_px[2026]:,.0f} ₽/г).",
             "Наличные — с декабря 2025; накопления Маша и Саша — с января 2026. До закрытого месяца на графике факт (без выдуманной внутригодовой траектории), далее +2,5% годовых.",
             "Куинджи: квартира и паркинг с мая 2024. До 2030 — индекс ЖК, с 2031 — 3,5% и 3% годовых от текущего уровня.",
-            f"Пхукет: на графике портфеля с марта 2026 как доля оплаты ({thai_paid_now/1e6:.2f} из {THAI_BUY/1e6:.0f} млн) × рынок. В «Сейчас» и составе не входит — до сдачи. До 2030 индекс Bangtao, с 2031 — 4% годовых в батах.",
+            f"Пхукет: на графике портфеля с марта 2026 — контракт {THAI_BUY/1e6:.2f} млн ₽ (старт продаж), далее индекс Bangtao и курс бата. В «Сейчас» и составе не входит — до сдачи. До 2030 индекс Bangtao, с 2031 — 4% годовых в батах.",
             "USD: 2026 — курс ЦБ; к 2030 сценарий 94 ₽; далее +2 ₽/год (~2%/год), близко к разрыву инфляции 4% РФ / 2% США при цели ЦБ. Это сценарий, не прогноз ЦБ.",
             f"2027–{HORIZON_END} — сценарий, не инвестсовет.",
         ],

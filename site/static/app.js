@@ -88,7 +88,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "30";
+const SNAPSHOT_VER = "31";
 
 function isLocalApi() {
   return location.hostname === "127.0.0.1" || location.hostname === "localhost";

@@ -730,19 +730,32 @@ body.chart-fs .assist-panel { visibility: hidden; pointer-events: none; }
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 14px 20px;
+  padding: 12px 14px 72px;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 .data-grid {
   display: grid;
-  grid-template-columns: 260px 1fr 280px;
+  grid-template-columns: 260px minmax(0, 1fr) 280px;
   gap: 10px;
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 280px;
+  align-items: stretch;
+}
+.data-grid > .panel {
+  position: relative;
+  min-width: 0;
+  overflow: auto;
 }
 .data-grid .grow { min-width: 0; }
+.ledger-panel {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  min-height: 260px;
+  overflow: auto;
+}
 .drop {
   display: flex;
   flex-direction: column;
@@ -1282,7 +1295,35 @@ td select { width: 100%; padding: 4px; }
 @media (max-width: 1180px) {
   .shell { height: auto; min-height: 100dvh; overflow: auto; }
   .view, .dash, .data-view { height: auto; overflow: visible; }
-  .dash-body, .data-grid, .share-main-grid, .share-notes-grid { grid-template-columns: 1fr; }
+  .dash-body, .share-main-grid, .share-notes-grid { grid-template-columns: 1fr; }
+  .data-grid {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    min-height: 0;
+    height: auto;
+    overflow: visible;
+    grid-template-columns: none;
+  }
+  .data-grid > .panel {
+    min-height: 220px;
+    height: auto;
+    overflow: visible;
+    flex: none;
+  }
+  .data-grid .table-wrap {
+    flex: none;
+    min-height: 200px;
+    max-height: 48vh;
+  }
+  .ledger-panel {
+    flex: none;
+    min-height: 280px;
+    overflow: visible;
+  }
+  .ledger-panel .table-wrap {
+    max-height: none;
+  }
   .ticker.ticker-compact {
     max-width: none;
     flex: 1 1 auto;
