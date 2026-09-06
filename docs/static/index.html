@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="static/styles.css?v=22" />
+  <link rel="stylesheet" href="static/styles.css?v=30" />
   <script>
     document.documentElement.dataset.theme = localStorage.getItem("sasha-theme") || "dark";
   </script>
@@ -29,15 +29,13 @@
       </div>
     </header>
     <div class="subbar">
-      <p class="period" id="analytics-period"></p>
+      <div class="ticker ticker-compact" id="markets" aria-label="Курсы и золото"></div>
       <nav class="tabs">
         <button class="tab active" data-view="analytics">Аналитика</button>
         <button class="tab" data-view="share">Стоимость активов</button>
         <button class="tab" data-view="data">Данные</button>
       </nav>
     </div>
-
-    <div class="ticker" id="markets"></div>
 
     <section id="view-analytics" class="view dash">
       <div class="dash-body">
@@ -47,17 +45,16 @@
               <h2>Кумулятив FCF</h2>
               <p class="hint">факт 2026 · план до 2040, млн ₽</p>
             </div>
-            <div class="kpi-mini" id="budget-kpis"></div>
           </div>
-          <div class="year-picks" id="fcf-years">
-            <span class="year-picks-label">Годы</span>
-            <button type="button" class="chip year-chip active" data-year="2026">2026</button>
-            <button type="button" class="chip year-chip active" data-year="2027">2027</button>
-            <button type="button" class="chip year-chip active" data-year="2028">2028</button>
-            <button type="button" class="chip year-reset" id="btn-fcf-reset">Сбросить</button>
-          </div>
+          <div class="kpi-mini fcf-kpis" id="budget-kpis"></div>
+          <div class="fcf-timeline" id="fcf-years"></div>
           <div class="chart-box">
+            <button type="button" class="chart-expand" id="btn-fcf-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+              <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+              <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
             <canvas id="chart-cumul"></canvas>
+            <div class="chart-hover" id="fcf-hover" hidden></div>
           </div>
         </section>
 
@@ -77,6 +74,10 @@
             <div class="filter-nest hidden" id="filter-nest"></div>
           </div>
           <div class="chart-box">
+            <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+              <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+              <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
             <canvas id="chart-slice"></canvas>
           </div>
         </section>
@@ -105,35 +106,27 @@
           <div class="panel-head">
             <div>
               <h2>Портфель</h2>
-              <p class="hint">рыночная стоимость · факт сплошной · прогноз пунктиром · Пхукет с 2029</p>
+              <p class="hint">рыночная стоимость помесячно · факт сплошной · прогноз пунктиром</p>
             </div>
-            <div class="kpi-mini asset-now-kpis" id="share-cash-kpis"></div>
           </div>
           <div class="portfolio-controls">
-            <div class="year-picks asset-year-picks" id="asset-years">
-              <span class="year-picks-label">Годы</span>
-              <button type="button" class="chip year-chip active" data-year="2024">2024</button>
-              <button type="button" class="chip year-chip active" data-year="2025">2025</button>
-              <button type="button" class="chip year-chip active" data-year="2026">2026</button>
-              <button type="button" class="chip year-chip active" data-year="2027">2027</button>
-              <button type="button" class="chip year-chip active" data-year="2028">2028</button>
-              <button type="button" class="chip year-chip active" data-year="2029">2029</button>
-              <button type="button" class="chip year-chip active" data-year="2030">2030</button>
-              <button type="button" class="chip year-reset" id="btn-asset-years-reset">Сбросить</button>
-            </div>
-            <div class="portfolio-filters-row">
-              <div class="asset-filters" id="asset-filters" aria-label="Активы"></div>
-              <button type="button" class="chip year-reset" id="btn-asset-filters-reset">Сбросить</button>
-            </div>
+            <div class="fcf-timeline" id="asset-years"></div>
             <div class="share-toggles">
-              <label class="toggle-pill"><input type="checkbox" id="show-forecast" checked /> Прогноз до 2040</label>
               <label class="toggle-pill"><input type="checkbox" id="show-drivers" /> Драйверы рынка</label>
             </div>
           </div>
           <div class="chart-box share-chart-lg">
+            <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+              <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+              <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
             <canvas id="chart-assets"></canvas>
           </div>
           <div class="chart-box share-chart-sm hidden" id="drivers-wrap">
+            <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+              <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+              <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
             <canvas id="chart-drivers"></canvas>
           </div>
         </section>
@@ -142,6 +135,10 @@
           <section class="panel">
             <h2>Состав сейчас</h2>
             <div class="chart-box share-donut">
+              <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+                <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+                <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
               <canvas id="chart-savings"></canvas>
             </div>
             <div id="cash-from-sasha" class="share-table"></div>
@@ -150,6 +147,10 @@
             <h2>Доли недвижимости</h2>
             <div id="share-prop-kpis"></div>
             <div class="chart-box share-chart">
+              <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+                <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+                <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
               <canvas id="chart-property"></canvas>
             </div>
           </section>
@@ -242,8 +243,9 @@
       </section>
     </section>
   </div>
-  <script src="static/sync.js?v=22"></script>
-  <script src="static/app.js?v=22"></script>
-  <script src="static/assistant.js?v=22"></script>
+  <div class="fcf-backdrop hidden" id="fcf-backdrop" hidden></div>
+  <script src="static/sync.js?v=30"></script>
+  <script src="static/app.js?v=30"></script>
+  <script src="static/assistant.js?v=30"></script>
 </body>
 </html>

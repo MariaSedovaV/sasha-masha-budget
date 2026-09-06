@@ -62,17 +62,31 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
     labels = []
     series_plan = []
     series_fact = []
+    series_income_plan = []
+    series_income_fact = []
+    series_expense_plan = []
+    series_expense_fact = []
     events = []
 
     excel_plan = read_plan_horizon()
     excel_fact = read_fact_cumul_series()
 
+    income_plan_by_ym = {}
+    income_fact_by_ym = {}
+    expense_plan_by_ym = {}
+    expense_fact_by_ym = {}
     thailand_plan_by_ym = {}
     large_plan_by_ym = {}
     for r in rows:
         if r.get("year", BASE_YEAR) < BASE_YEAR or r.get("year", BASE_YEAR) > FCF_END_YEAR:
             continue
         key = (r.get("year", BASE_YEAR), r["month"])
+        if r["kind"] == "income":
+            income_plan_by_ym[key] = income_plan_by_ym.get(key, 0) + r["plan"]
+            income_fact_by_ym[key] = income_fact_by_ym.get(key, 0) + r["fact"]
+        elif r["kind"] == "expense":
+            expense_plan_by_ym[key] = expense_plan_by_ym.get(key, 0) + r["plan"]
+            expense_fact_by_ym[key] = expense_fact_by_ym.get(key, 0) + r["fact"]
         if r["category"] == "Квартира Тайланд":
             thailand_plan_by_ym[key] = thailand_plan_by_ym.get(key, 0) + r["plan"]
         if r["category"] in ("Парковка", "Крупные покупки", "Отпуска"):
@@ -109,6 +123,15 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
                 series_fact.append(round(cumul_fact / 1e6, 2))
         else:
             series_fact.append(None)
+
+        series_income_plan.append(round(income_plan_by_ym.get((year, month), 0) / 1e6, 2))
+        series_expense_plan.append(round(-expense_plan_by_ym.get((year, month), 0) / 1e6, 2))
+        if year == BASE_YEAR and month <= closed:
+            series_income_fact.append(round(income_fact_by_ym.get((year, month), 0) / 1e6, 2))
+            series_expense_fact.append(round(-expense_fact_by_ym.get((year, month), 0) / 1e6, 2))
+        else:
+            series_income_fact.append(None)
+            series_expense_fact.append(None)
 
         th = thailand_plan_by_ym.get((year, month), 0)
         if th >= 1_000_000:
@@ -156,6 +179,10 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
         "labels": labels,
         "series_plan": series_plan,
         "series_fact": series_fact,
+        "series_income_plan": series_income_plan,
+        "series_income_fact": series_income_fact,
+        "series_expense_plan": series_expense_plan,
+        "series_expense_fact": series_expense_fact,
         "series_forecast": [],
         "events": uniq,
         "start_year": BASE_YEAR,

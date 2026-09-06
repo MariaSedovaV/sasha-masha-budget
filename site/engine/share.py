@@ -73,7 +73,7 @@ def build_share(rows: list[dict], closed_month: int = 7) -> dict:
             "sasha_cash": cur["sasha"],
             "gold": cur["gold"],
             "spb": cur["spb"],
-            "phuket": cur["phuket"],
+            "phuket": 0,
             "liquid": liq["liquid_total"],
             "all": timeline["kpis"]["now"],
         },

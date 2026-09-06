@@ -12,8 +12,13 @@ const FALLBACK_TREE = [
   { id: "income", label: "Доходы", tone: "sky", categories: [], children: [] },
 ];
 
-const ALL_FCF_YEARS = Array.from({ length: 2040 - 2026 + 1 }, (_, i) => 2026 + i);
-const ALL_ASSET_YEARS = Array.from({ length: 2040 - 2024 + 1 }, (_, i) => 2024 + i);
+const FCF_YEAR_MIN = 2026;
+const FCF_YEAR_MAX = 2040;
+const FCF_RANGE_DEFAULT = [2026, 2028];
+const ASSET_YEAR_MIN = 2024;
+const ASSET_YEAR_MAX = 2040;
+const ASSET_RANGE_DEFAULT = [2024, 2028];
+const ALL_ASSET_YEARS = Array.from({ length: ASSET_YEAR_MAX - ASSET_YEAR_MIN + 1 }, (_, i) => ASSET_YEAR_MIN + i);
 
 let state = {
   importId: null,
@@ -25,16 +30,18 @@ let state = {
   filterGroups: [],
   selectedCats: [],
   sliceDetail: false,
-  fcfYears: [...ALL_FCF_YEARS],
+  fcfFrom: FCF_RANGE_DEFAULT[0],
+  fcfTo: FCF_RANGE_DEFAULT[1],
+  assetFrom: ASSET_RANGE_DEFAULT[0],
+  assetTo: ASSET_RANGE_DEFAULT[1],
   merchants: [],
   share: null,
-  assetIds: null,
-  showForecast: true,
   showDrivers: false,
-  assetYears: [...ALL_ASSET_YEARS],
   shareBound: false,
-  fcfYearsBound: false,
-  assetYearsBound: false,
+  fcfTimelineBound: false,
+  assetTimelineBound: false,
+  chartExpandBound: false,
+  expandedPanel: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +73,7 @@ document.querySelectorAll(".tab").forEach((btn) => {
     $("view-share").classList.toggle("hidden", view !== "share");
     $("view-data").classList.toggle("hidden", view !== "data");
     if (view === "analytics") loadAnalytics();
+    else setChartExpanded(null);
     if (view === "share") loadShare();
     if (view === "data") loadDataTab();
   });
@@ -80,7 +88,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "22";
+const SNAPSHOT_VER = "30";
 
 function isLocalApi() {
   return location.hostname === "127.0.0.1" || location.hostname === "localhost";
@@ -224,36 +232,310 @@ function ensureYearChips(box, years, selected, resetId) {
     `<button type="button" class="chip year-reset" id="${resetId}">Сбросить</button>`;
 }
 
-function bindFcfYears() {
-  if (state.fcfYearsBound) return;
-  state.fcfYearsBound = true;
-  const box = $("fcf-years");
-  ensureYearChips(box, ALL_FCF_YEARS, state.fcfYears, "btn-fcf-reset");
-  if (box) {
-    box.addEventListener("click", (e) => {
-      const btn = e.target.closest(".year-chip");
-      if (!btn || !box.contains(btn)) return;
-      const y = Number(btn.dataset.year);
-      const cur = state.fcfYears || [];
-      const all = ALL_FCF_YEARS.length;
-      if (cur.length === 1 && cur[0] === y) return;
-      if (cur.length === all) {
-        state.fcfYears = [y];
-      } else if (cur.includes(y)) {
-        state.fcfYears = [y];
-      } else {
-        state.fcfYears = [...cur, y].sort((a, b) => a - b);
+function timelineSpecs() {
+  return {
+    fcf: {
+      boxId: "fcf-years",
+      boundKey: "fcfTimelineBound",
+      fromKey: "fcfFrom",
+      toKey: "fcfTo",
+      defaults: FCF_RANGE_DEFAULT,
+      bounds: () => {
+        const hz = state.analytics && state.analytics.fcf_horizon;
+        return {
+          min: Number(hz && hz.start_year) || FCF_YEAR_MIN,
+          max: Number(hz && hz.end_year) || FCF_YEAR_MAX,
+        };
+      },
+      onChange: () => paintCumul(),
+    },
+    asset: {
+      boxId: "asset-years",
+      boundKey: "assetTimelineBound",
+      fromKey: "assetFrom",
+      toKey: "assetTo",
+      defaults: ASSET_RANGE_DEFAULT,
+      bounds: () => {
+        const tl = state.share && state.share.timeline;
+        return {
+          min: Number(tl && tl.start_year) || ASSET_YEAR_MIN,
+          max: Number(tl && tl.end_year) || ASSET_YEAR_MAX,
+        };
+      },
+      onChange: () => paintShare(),
+    },
+  };
+}
+
+function clampTimelineRange(kind) {
+  const spec = timelineSpecs()[kind];
+  const { min, max } = spec.bounds();
+  let from = Number(state[spec.fromKey]);
+  let to = Number(state[spec.toKey]);
+  if (!Number.isFinite(from)) from = spec.defaults[0];
+  if (!Number.isFinite(to)) to = spec.defaults[1];
+  from = Math.max(min, Math.min(max, Math.round(from)));
+  to = Math.max(min, Math.min(max, Math.round(to)));
+  if (from > to) {
+    const tmp = from;
+    from = to;
+    to = tmp;
+  }
+  state[spec.fromKey] = from;
+  state[spec.toKey] = to;
+  return { min, max, from, to };
+}
+
+function yearFromTimelinePoint(box, clientX, min, max) {
+  const ticks = [...box.querySelectorAll(".fcf-tick")];
+  if (ticks.length) {
+    let best = ticks[0];
+    let bestDist = Infinity;
+    ticks.forEach((tick) => {
+      const rect = tick.getBoundingClientRect();
+      const dist = Math.abs(clientX - (rect.left + rect.width / 2));
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = tick;
       }
-      paintCumul();
+    });
+    const y = Number(best.dataset.year);
+    if (Number.isFinite(y)) return y;
+  }
+  const track = box.querySelector(".fcf-track");
+  if (!track) return min;
+  const rect = track.getBoundingClientRect();
+  if (!rect.width) return min;
+  const t = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return min + Math.round(t * (max - min));
+}
+
+function setTimelineHandleYear(kind, handle, year) {
+  const spec = timelineSpecs()[kind];
+  const { min, max, from, to } = clampTimelineRange(kind);
+  const y = Math.max(min, Math.min(max, year));
+  if (handle === "min") state[spec.fromKey] = Math.min(y, to);
+  else state[spec.toKey] = Math.max(y, from);
+  const next = clampTimelineRange(kind);
+  if (next.from === from && next.to === to) {
+    syncTimeline(kind);
+    return false;
+  }
+  spec.onChange();
+  return true;
+}
+
+function bindTimeline(kind) {
+  const spec = timelineSpecs()[kind];
+  const box = $(spec.boxId);
+  if (!box) return;
+  if (state[spec.boundKey]) {
+    syncTimeline(kind);
+    return;
+  }
+  state[spec.boundKey] = true;
+  const p = kind;
+  box.innerHTML = `
+    <div class="fcf-timeline-head">
+      <span class="year-picks-label">Горизонт</span>
+      <span class="fcf-timeline-range" id="${p}-range-label"></span>
+    </div>
+    <div class="fcf-slider" id="${p}-slider">
+      <div class="fcf-track" id="${p}-track">
+        <div class="fcf-fill" id="${p}-fill"></div>
+        <button type="button" class="fcf-thumb" id="${p}-thumb-min" data-handle="min" aria-label="Начало диапазона"></button>
+        <button type="button" class="fcf-thumb" id="${p}-thumb-max" data-handle="max" aria-label="Конец диапазона"></button>
+      </div>
+      <div class="fcf-scale" id="${p}-scale"></div>
+    </div>`;
+
+  const track = box.querySelector(".fcf-track");
+  const slider = box.querySelector(".fcf-slider");
+  let dragHandle = null;
+
+  const onMove = (ev) => {
+    if (!dragHandle) return;
+    ev.preventDefault();
+    const { min, max } = clampTimelineRange(kind);
+    setTimelineHandleYear(kind, dragHandle, yearFromTimelinePoint(box, ev.clientX, min, max));
+  };
+  const onUp = () => {
+    dragHandle = null;
+    box.querySelectorAll(".fcf-thumb").forEach((t) => t.classList.remove("dragging"));
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
+  };
+
+  box.querySelectorAll(".fcf-thumb").forEach((thumb) => {
+    thumb.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      dragHandle = thumb.dataset.handle;
+      thumb.classList.add("dragging");
+      thumb.focus();
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+    thumb.addEventListener("keydown", (ev) => {
+      const handle = thumb.dataset.handle;
+      const { min, max, from, to } = clampTimelineRange(kind);
+      const cur = handle === "min" ? from : to;
+      let next = cur;
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowDown") next = cur - 1;
+      else if (ev.key === "ArrowRight" || ev.key === "ArrowUp") next = cur + 1;
+      else if (ev.key === "Home") next = min;
+      else if (ev.key === "End") next = max;
+      else return;
+      ev.preventDefault();
+      setTimelineHandleYear(kind, handle, next);
+    });
+  });
+
+  if (track) {
+    track.addEventListener("pointerdown", (ev) => {
+      if (ev.target.closest(".fcf-thumb")) return;
+      const { min, max, from, to } = clampTimelineRange(kind);
+      const y = yearFromTimelinePoint(box, ev.clientX, min, max);
+      const handle = Math.abs(y - from) <= Math.abs(y - to) ? "min" : "max";
+      dragHandle = handle;
+      setTimelineHandleYear(kind, handle, y);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     });
   }
-  const reset = $("btn-fcf-reset");
-  if (reset) {
-    reset.addEventListener("click", () => {
-      state.fcfYears = [...ALL_FCF_YEARS];
-      paintCumul();
+
+  if (slider) {
+    slider.addEventListener("click", (ev) => {
+      const tick = ev.target.closest("[data-year]");
+      if (!tick || !slider.contains(tick)) return;
+      const y = Number(tick.dataset.year);
+      const { from, to } = clampTimelineRange(kind);
+      if (y < from) setTimelineHandleYear(kind, "min", y);
+      else if (y > to) setTimelineHandleYear(kind, "max", y);
+      else if (Math.abs(y - from) <= Math.abs(y - to)) setTimelineHandleYear(kind, "min", y);
+      else setTimelineHandleYear(kind, "max", y);
     });
   }
+  syncTimeline(kind);
+}
+
+function syncTimeline(kind) {
+  const spec = timelineSpecs()[kind];
+  const box = $(spec.boxId);
+  if (!box) return;
+  const { min, max, from, to } = clampTimelineRange(kind);
+  const span = Math.max(1, max - min);
+  const fromPct = ((from - min) / span) * 100;
+  const toPct = ((to - min) / span) * 100;
+  const fill = box.querySelector(".fcf-fill");
+  const minThumb = box.querySelector("[data-handle='min']");
+  const maxThumb = box.querySelector("[data-handle='max']");
+  const label = box.querySelector(".fcf-timeline-range");
+  const scale = box.querySelector(".fcf-scale");
+  const slider = box.querySelector(".fcf-slider");
+  if (fill) {
+    fill.style.left = fromPct + "%";
+    fill.style.width = Math.max(0, toPct - fromPct) + "%";
+  }
+  if (minThumb) {
+    minThumb.style.left = fromPct + "%";
+    minThumb.setAttribute("role", "slider");
+    minThumb.setAttribute("aria-valuemin", String(min));
+    minThumb.setAttribute("aria-valuemax", String(to));
+    minThumb.setAttribute("aria-valuenow", String(from));
+    minThumb.setAttribute("aria-valuetext", String(from));
+  }
+  if (maxThumb) {
+    maxThumb.style.left = toPct + "%";
+    maxThumb.setAttribute("role", "slider");
+    maxThumb.setAttribute("aria-valuemin", String(from));
+    maxThumb.setAttribute("aria-valuemax", String(max));
+    maxThumb.setAttribute("aria-valuenow", String(to));
+    maxThumb.setAttribute("aria-valuetext", String(to));
+  }
+  if (label) label.textContent = from === to ? String(from) : `${from} — ${to}`;
+  if (scale) {
+    const years = [];
+    for (let y = min; y <= max; y++) years.push(y);
+    const tickCount = String(years.length);
+    scale.style.setProperty("--fcf-ticks", tickCount);
+    if (slider) slider.style.setProperty("--fcf-ticks", tickCount);
+    const ticks = [...scale.querySelectorAll(".fcf-tick")];
+    if (ticks.length !== years.length) {
+      scale.innerHTML = years.map((y) => {
+        const on = y >= from && y <= to;
+        return `<button type="button" class="fcf-tick${on ? " on" : ""}" data-year="${y}">${String(y).slice(2)}</button>`;
+      }).join("");
+    } else {
+      ticks.forEach((el, i) => {
+        el.classList.toggle("on", years[i] >= from && years[i] <= to);
+      });
+    }
+  }
+}
+
+function bindFcfTimeline() {
+  bindTimeline("fcf");
+}
+
+function resizeChartsIn(panel) {
+  requestAnimationFrame(() => {
+    if (!panel || !charts) return;
+    panel.querySelectorAll("canvas").forEach((el) => {
+      const chart = charts[el.id];
+      if (chart && typeof chart.resize === "function") chart.resize();
+    });
+  });
+}
+
+function setChartExpanded(panel) {
+  const backdrop = $("fcf-backdrop");
+  const current = state.expandedPanel;
+  const next = panel && current === panel ? null : panel;
+  document.querySelectorAll(".panel.is-expanded").forEach((p) => p.classList.remove("is-expanded"));
+  document.querySelectorAll(".chart-expand").forEach((btn) => {
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("aria-label", "На весь экран");
+    btn.title = "На весь экран";
+  });
+  state.expandedPanel = next;
+  document.body.classList.toggle("chart-fs", !!next);
+  if (next) {
+    next.classList.add("is-expanded");
+    next.querySelectorAll(".chart-expand").forEach((btn) => {
+      btn.setAttribute("aria-pressed", "true");
+      btn.setAttribute("aria-label", "Свернуть график");
+      btn.title = "Свернуть";
+    });
+  }
+  if (backdrop) {
+    backdrop.hidden = !next;
+    backdrop.classList.toggle("hidden", !next);
+  }
+  resizeChartsIn(next || current);
+}
+
+function bindChartExpands() {
+  if (state.chartExpandBound) return;
+  state.chartExpandBound = true;
+  document.querySelectorAll(".chart-expand").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setChartExpanded(btn.closest(".panel"));
+    });
+  });
+  const backdrop = $("fcf-backdrop");
+  if (backdrop) backdrop.addEventListener("click", () => setChartExpanded(null));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && state.expandedPanel) {
+      ev.preventDefault();
+      setChartExpanded(null);
+    }
+  });
 }
 
 async function upload(f) {
@@ -508,11 +790,13 @@ async function loadMarkets() {
   } catch {
     mk = { usd: null, thb: null, gold_gram: null, error: "нет связи" };
   }
+  const box = $("markets");
+  if (!box) return;
   const usdDelta = mk.usd && mk.usd.previous ? mk.usd.value - mk.usd.previous : 0;
   const thbDelta = mk.thb && mk.thb.previous ? mk.thb.value - mk.thb.previous : 0;
   const stamp = mk.as_of ? `ЦБ · ${String(mk.as_of).slice(0, 10)}` : "";
   const cacheNote = mk.cached ? " · кэш 1 ч" : " · только что";
-  $("markets").innerHTML = [
+  box.innerHTML = [
     kpi("Доллар США", mk.usd ? mk.usd.value.toFixed(2) + " ₽" : "нет данных",
       mk.usd ? `${usdDelta >= 0 ? "+" : ""}${usdDelta.toFixed(2)} к вчера${cacheNote}` : (mk.error || "ЦБ недоступен"),
       usdDelta),
@@ -526,7 +810,7 @@ async function loadMarkets() {
 
 function kpi(label, value, sub, delta) {
   const cls = delta > 0 ? "up" : delta < 0 ? "down" : "";
-  return `<div class="kpi ${cls}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || ""}</div></div>`;
+  return `<div class="kpi compact ${cls}"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub || ""}</div></div>`;
 }
 
 async function loadAnalytics() {
@@ -536,15 +820,17 @@ async function loadAnalytics() {
   ]);
   state.analytics = an;
   state.ledger = applyVoiceAddsToLedger(ledger);
-  $("analytics-period").textContent =
-    `Январь — ${MONTHS[an.closed_month - 1]} 2026 · цель 12 млн с недвижимостью`;
 
   const dlt = an.delta;
-  $("budget-kpis").innerHTML = [
-    `<div class="chip-kpi"><b>${mln(an.cumul_fact)}</b><span>факт FCF</span></div>`,
-    `<div class="chip-kpi"><b>${dlt >= 0 ? "+" : "−"}${Math.abs(dlt / 1000).toFixed(0)} тыс.</b><span>опережение плана</span></div>`,
-    `<div class="chip-kpi"><b>${mln(an.net_worth)}</b><span>FCF+ жилье (опер. прогноз до конца года)</span></div>`,
-  ].join("");
+  const closedShort = MONTHS_SHORT[an.closed_month - 1] || "";
+  const kpis = $("budget-kpis");
+  if (kpis) {
+    kpis.innerHTML = [
+      `<div class="chip-kpi"><b>${mln(an.cumul_fact)}</b><span>факт FCF · ${closedShort}</span></div>`,
+      `<div class="chip-kpi"><b>${dlt >= 0 ? "+" : "−"}${Math.abs(dlt / 1000).toFixed(0)} тыс.</b><span>к плану на ${closedShort}</span></div>`,
+      `<div class="chip-kpi"><b>${mln(an.net_worth)}</b><span>FCF + оплаченное жильё</span></div>`,
+    ].join("");
+  }
 
   themeCharts();
   paintCumul();
@@ -606,43 +892,246 @@ function expenseCats() {
   return [];
 }
 
-function syncFcfYearChips() {
-  const box = $("fcf-years");
-  if (!box) return;
-  const years = new Set(state.fcfYears || []);
-  box.querySelectorAll(".year-chip").forEach((btn) => {
-    const on = years.has(Number(btn.dataset.year));
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
-  });
+function fcfMonthTitle(lab) {
+  const parts = String(lab).split(".");
+  const m = Number(parts[0]);
+  const y = parts[1] || "";
+  if (m >= 1 && m <= 12) return `${MONTHS[m - 1]} ${y}`;
+  return String(lab);
+}
+
+function mlnShort(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return Number(v).toFixed(2).replace(".", ",");
+}
+
+const fcfCrosshairPlugin = {
+  id: "fcfCrosshair",
+  afterDatasetsDraw(chart) {
+    const active = chart.getActiveElements();
+    if (!active.length) return;
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return;
+    const candidates = active.filter((a) => {
+      const ds = chart.data.datasets[a.datasetIndex];
+      const val = ds && ds.data ? ds.data[a.index] : null;
+      return ds && !ds.isEvent && val != null && !Number.isNaN(Number(val));
+    });
+    const factPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "FCF факт");
+    const main = factPt || candidates[0] || active.find((a) => a.element) || active[0];
+    if (!main || !main.element) return;
+    const x = main.element.x;
+    const y = main.element.y;
+    const stroke = currentTheme() === "light" ? "rgba(110,78,40,0.38)" : "rgba(232,211,168,0.38)";
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+    ctx.clip();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, y);
+    ctx.lineTo(chartArea.right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const gold = factColor();
+    ctx.beginPath();
+    ctx.arc(x, y, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = gold;
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = cssVar("--bg");
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
+const fcfZeroLinePlugin = {
+  id: "fcfZeroLine",
+  afterDraw(chart) {
+    const y = chart.scales && chart.scales.y;
+    const { ctx, chartArea } = chart;
+    if (!y || !chartArea) return;
+    const py = y.getPixelForValue(0);
+    if (!Number.isFinite(py) || py < chartArea.top || py > chartArea.bottom) return;
+    ctx.save();
+    ctx.strokeStyle = currentTheme() === "light" ? "rgba(28,25,21,0.22)" : "rgba(239,232,220,0.18)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, py);
+    ctx.lineTo(chartArea.right, py);
+    ctx.stroke();
+    ctx.restore();
+  },
+};
+
+const nowLinePlugin = {
+  id: "nowLine",
+  afterDraw(chart, _args, opts) {
+    const idx = opts && opts.index;
+    if (idx == null || idx < 0) return;
+    const xScale = chart.scales && chart.scales.x;
+    const { ctx, chartArea } = chart;
+    if (!xScale || !chartArea) return;
+    const x = xScale.getPixelForValue(idx);
+    if (!Number.isFinite(x) || x < chartArea.left || x > chartArea.right) return;
+    const color = currentTheme() === "light" ? "rgba(46, 122, 126, 0.85)" : "rgba(110, 196, 200, 0.85)";
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+    ctx.clip();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, chartArea.top);
+    ctx.lineTo(x, chartArea.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const label = opts.label || "сейчас";
+    ctx.font = "600 10px Montserrat, sans-serif";
+    const padX = 6;
+    const w = ctx.measureText(label).width + padX * 2;
+    const h = 16;
+    let lx = x - w / 2;
+    lx = Math.max(chartArea.left + 2, Math.min(chartArea.right - w - 2, lx));
+    const ly = chartArea.top + 4;
+    ctx.fillStyle = currentTheme() === "light" ? "rgba(243, 238, 228, 0.92)" : "rgba(17, 19, 24, 0.88)";
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const r = 8;
+    ctx.moveTo(lx + r, ly);
+    ctx.arcTo(lx + w, ly, lx + w, ly + h, r);
+    ctx.arcTo(lx + w, ly + h, lx, ly + h, r);
+    ctx.arcTo(lx, ly + h, lx, ly, r);
+    ctx.arcTo(lx, ly, lx + w, ly, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, lx + w / 2, ly + h / 2);
+    ctx.restore();
+  },
+};
+
+function renderFcfHover(context, meta) {
+  const el = $("fcf-hover");
+  if (!el) return;
+  const tooltip = context.tooltip;
+  if (!tooltip || tooltip.opacity === 0 || !tooltip.dataPoints || !tooltip.dataPoints.length) {
+    el.hidden = true;
+    return;
+  }
+  const idx = tooltip.dataPoints[0].dataIndex;
+  const fact = meta.fact[idx];
+  const plan = meta.plan[idx];
+  const incFact = meta.incomeFact ? meta.incomeFact[idx] : null;
+  const incPlan = meta.incomePlan ? meta.incomePlan[idx] : null;
+  const expFact = meta.expenseFact ? meta.expenseFact[idx] : null;
+  const expPlan = meta.expensePlan ? meta.expensePlan[idx] : null;
+  const evs = (meta.events || []).filter((e) => e.visIndex === idx);
+  const rows = [];
+  if (fact != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch fact"></i><span>FCF факт</span><b>${mlnShort(fact)} <em>млн</em></b></div>`);
+  }
+  if (plan != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch plan"></i><span>FCF план</span><b>${mlnShort(plan)} <em>млн</em></b></div>`);
+  }
+  if (incFact != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch income"></i><span>Доходы факт</span><b>${mlnShort(incFact)} <em>млн</em></b></div>`);
+  }
+  if (incPlan != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch income-plan"></i><span>Доходы план</span><b>${mlnShort(incPlan)} <em>млн</em></b></div>`);
+  }
+  if (expFact != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch expense"></i><span>Расходы факт</span><b>${mlnShort(Math.abs(expFact))} <em>млн</em></b></div>`);
+  }
+  if (expPlan != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch expense-plan"></i><span>Расходы план</span><b>${mlnShort(Math.abs(expPlan))} <em>млн</em></b></div>`);
+  }
+  let deltaHtml = "";
+  if (fact != null && plan != null) {
+    const d = fact - plan;
+    const cls = d >= 0 ? "up" : "down";
+    const sign = d >= 0 ? "+" : "−";
+    deltaHtml = `<div class="chart-hover-delta ${cls}">${sign}${mlnShort(Math.abs(d))} к плану FCF</div>`;
+  }
+  const eventsHtml = evs.map((e) =>
+    `<div class="chart-hover-event tone-${e.tone || "gold"}">${e.label}${e.detail ? " · " + e.detail : ""}</div>`
+  ).join("");
+  if (!rows.length && !eventsHtml) {
+    el.hidden = true;
+    return;
+  }
+  el.innerHTML =
+    `<div class="chart-hover-date">${fcfMonthTitle(meta.labels[idx])}</div>` +
+    rows.join("") +
+    deltaHtml +
+    eventsHtml;
+  el.hidden = false;
+  const canvas = context.chart.canvas;
+  const box = el.parentElement;
+  const caretX = tooltip.caretX;
+  const caretY = tooltip.caretY;
+  const pad = 12;
+  const tw = el.offsetWidth || 160;
+  const th = el.offsetHeight || 72;
+  const maxX = (box.clientWidth || canvas.clientWidth) - tw - 4;
+  const maxY = (box.clientHeight || canvas.clientHeight) - th - 4;
+  let left = caretX + pad;
+  let top = caretY - th - 8;
+  if (left > maxX) left = caretX - tw - pad;
+  if (top < 4) top = caretY + 14;
+  el.style.left = Math.max(4, Math.min(maxX, left)) + "px";
+  el.style.top = Math.max(4, Math.min(maxY, top)) + "px";
 }
 
 function paintCumul() {
   const an = state.analytics;
   if (!an) return;
   themeCharts();
-  bindFcfYears();
-  syncFcfYearChips();
+  bindFcfTimeline();
+  bindChartExpands();
+  const hover = $("fcf-hover");
+  if (hover) hover.hidden = true;
 
   const hz = an.fcf_horizon;
   const gold = factColor();
   const muted = cssVar("--muted");
-  const yearSet = new Set(state.fcfYears || []);
+  const sage = cssVar("--sage");
+  const rose = cssVar("--rose");
+  const { from, to } = clampTimelineRange("fcf");
 
   let labels = [];
   let plan = [];
   let fact = [];
+  let incomePlan = [];
+  let incomeFact = [];
+  let expensePlan = [];
+  let expenseFact = [];
   let events = [];
   let keep = [];
 
   if (hz && Array.isArray(hz.labels)) {
     hz.labels.forEach((lab, i) => {
       const y = Number(String(lab).split(".")[1]);
-      if (yearSet.has(y)) keep.push(i);
+      if (y >= from && y <= to) keep.push(i);
     });
     labels = keep.map((i) => hz.labels[i]);
     plan = keep.map((i) => hz.series_plan[i]);
     fact = keep.map((i) => hz.series_fact[i]);
+    incomePlan = keep.map((i) => (hz.series_income_plan || [])[i]);
+    incomeFact = keep.map((i) => (hz.series_income_fact || [])[i]);
+    expensePlan = keep.map((i) => (hz.series_expense_plan || [])[i]);
+    expenseFact = keep.map((i) => (hz.series_expense_fact || [])[i]);
     const indexMap = new Map(keep.map((orig, vis) => [orig, vis]));
     events = (hz.events || [])
       .filter((e) => indexMap.has(e.index))
@@ -661,27 +1150,84 @@ function paintCumul() {
     return 0;
   });
 
+  const hasFlows = incomePlan.some((v) => v != null) || expensePlan.some((v) => v != null);
+  const flowLine = {
+    fill: "origin",
+    tension: 0.35,
+    pointRadius: 0,
+    pointHoverRadius: 3,
+    spanGaps: false,
+    pointStyle: "line",
+  };
   const datasets = [
     {
-      label: "План",
+      label: "Доходы факт",
+      data: incomeFact,
+      borderColor: sage,
+      backgroundColor: hexFade(sage, 0.28),
+      borderWidth: 1.2,
+      order: 4,
+      ...flowLine,
+    },
+    {
+      label: "Доходы план",
+      data: incomePlan,
+      borderColor: sage,
+      backgroundColor: hexFade(sage, 0.08),
+      borderDash: [4, 3],
+      borderWidth: 1.1,
+      order: 5,
+      ...flowLine,
+    },
+    {
+      label: "Расходы факт",
+      data: expenseFact,
+      borderColor: rose,
+      backgroundColor: hexFade(rose, 0.28),
+      borderWidth: 1.2,
+      order: 4,
+      ...flowLine,
+    },
+    {
+      label: "Расходы план",
+      data: expensePlan,
+      borderColor: rose,
+      backgroundColor: hexFade(rose, 0.08),
+      borderDash: [4, 3],
+      borderWidth: 1.1,
+      order: 5,
+      ...flowLine,
+    },
+    {
+      label: "FCF план",
       data: plan,
       borderColor: muted,
       backgroundColor: "transparent",
+      borderDash: [5, 4],
       tension: 0.25,
       borderWidth: 1.5,
       pointRadius: 0,
-      pointHoverRadius: 0,
+      pointHoverRadius: 4,
+      pointHoverBorderWidth: 1.5,
+      pointStyle: "line",
+      spanGaps: false,
+      fill: false,
+      order: 2,
     },
     {
-      label: "Факт",
+      label: "FCF факт",
       data: fact,
       borderColor: gold,
-      backgroundColor: hexFade(gold, 0.16),
-      fill: true,
+      backgroundColor: "transparent",
+      fill: false,
       tension: 0.25,
-      borderWidth: 2,
+      borderWidth: 2.6,
       pointRadius: 0,
-      pointHoverRadius: 0,
+      pointHoverRadius: 4,
+      pointHoverBorderWidth: 1.5,
+      pointStyle: "line",
+      spanGaps: false,
+      order: 1,
     },
     {
       label: "Ключевое событие",
@@ -696,34 +1242,58 @@ function paintCumul() {
       isEvent: true,
     },
   ];
+  const visible = hasFlows
+    ? datasets
+    : datasets.filter((ds) => !String(ds.label).startsWith("Доходы") && !String(ds.label).startsWith("Расходы"));
+
+  const closed = Number(an.closed_month) || 8;
+  const nowIdx = labels.findIndex((lab) => {
+    const parts = String(lab).split(".");
+    return Number(parts[0]) === closed && Number(parts[1]) === 2026;
+  });
+  const nowLabel = closed >= 1 && closed <= 12 ? `${MONTHS[closed - 1].slice(0, 3).toLowerCase()} ${String(2026).slice(2)}` : "сейчас";
+
+  const grid = currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)";
 
   paintChart("chart-cumul", {
     type: "line",
-    data: { labels, datasets },
+    plugins: [fcfCrosshairPlugin, fcfZeroLinePlugin, nowLinePlugin],
+    data: { labels, datasets: visible },
     options: {
       maintainAspectRatio: false,
-      interaction: { mode: "nearest", intersect: true, axis: "xy" },
+      animation: { duration: 180 },
+      interaction: { mode: "index", intersect: false },
       plugins: {
-        legend: legendOpts(),
-        tooltip: {
-          enabled: true,
-          filter: (item) => item.dataset.isEvent && item.raw != null,
-          callbacks: {
-            title: () => "",
-            label: (ctx) => {
-              const ev = events.find((e) => e.visIndex === ctx.dataIndex);
-              if (!ev) return null;
-              return [ev.label, ev.detail, labels[ctx.dataIndex]].filter(Boolean);
-            },
+        legend: legendOpts({
+          labels: {
+            boxWidth: 10,
+            font: { size: 10 },
+            filter: (item) => item.text !== "Ключевое событие",
           },
+        }),
+        tooltip: {
+          enabled: false,
+          external: (ctx) => renderFcfHover(ctx, {
+            labels, plan, fact, incomePlan, incomeFact, expensePlan, expenseFact, events,
+          }),
         },
+        nowLine: nowIdx >= 0 ? { index: nowIdx, label: nowLabel } : { index: -1 },
       },
       scales: {
         ...scaleOpts(),
-        y: { ...scaleOpts().y, title: { display: true, text: "млн ₽", color: muted } },
+        y: {
+          ...scaleOpts().y,
+          title: { display: true, text: "млн ₽", color: muted },
+          grid: {
+            color: (ctx) => (ctx.tick && ctx.tick.value === 0
+              ? (currentTheme() === "light" ? "rgba(28,25,21,0.22)" : "rgba(239,232,220,0.18)")
+              : grid),
+          },
+        },
       },
     },
   });
+  if (state.expandedPanel) resizeChartsIn(state.expandedPanel);
 }
 
 function hexFade(hex, alpha) {
@@ -1078,70 +1648,32 @@ function paintSlice() {
 function bindShareControls() {
   if (state.shareBound) return;
   state.shareBound = true;
-  const forecast = $("show-forecast");
   const drivers = $("show-drivers");
-  if (forecast) {
-    forecast.addEventListener("change", () => {
-      state.showForecast = forecast.checked;
-      paintShare();
-    });
-  }
   if (drivers) {
     drivers.addEventListener("change", () => {
       state.showDrivers = drivers.checked;
       paintShare();
     });
   }
-  const filtersReset = $("btn-asset-filters-reset");
-  if (filtersReset) {
-    filtersReset.addEventListener("click", () => {
-      state.assetIds = null;
-      paintShare();
-    });
-  }
-  bindAssetYears();
 }
 
-function bindAssetYears() {
-  if (state.assetYearsBound) return;
-  state.assetYearsBound = true;
-  const box = $("asset-years");
-  ensureYearChips(box, ALL_ASSET_YEARS, state.assetYears, "btn-asset-years-reset");
-  if (!box) return;
-  box.addEventListener("click", (e) => {
-    const btn = e.target.closest(".year-chip");
-    if (!btn || !box.contains(btn)) return;
-    const y = Number(btn.dataset.year);
-    const cur = state.assetYears || [];
-    const all = ALL_ASSET_YEARS.length;
-    if (cur.length === 1 && cur[0] === y) return;
-    if (cur.length === all) {
-      state.assetYears = [y];
-    } else if (cur.includes(y)) {
-      state.assetYears = [y];
-    } else {
-      state.assetYears = [...cur, y].sort((a, b) => a - b);
-    }
-    paintShare();
-  });
-  const yearsReset = $("btn-asset-years-reset");
-  if (yearsReset) {
-    yearsReset.addEventListener("click", () => {
-      state.assetYears = [...ALL_ASSET_YEARS];
-      paintShare();
-    });
+function monthYearFromLabel(lab) {
+  const s = String(lab);
+  if (s.includes(".")) {
+    const parts = s.split(".");
+    return { month: Number(parts[0]), year: Number(parts[1]) };
   }
+  return { month: 12, year: Number(s) };
 }
 
-function syncAssetYearChips() {
-  const box = $("asset-years");
-  if (!box) return;
-  const years = new Set(state.assetYears || []);
-  box.querySelectorAll(".year-chip").forEach((btn) => {
-    const on = years.has(Number(btn.dataset.year));
-    btn.classList.toggle("active", on);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
+function keepTimelineIndexes(tl, from, to) {
+  const labels = tl.labels || (tl.years || []).map(String);
+  const keep = [];
+  labels.forEach((lab, i) => {
+    const y = monthYearFromLabel(lab).year;
+    if (y >= from && y <= to) keep.push(i);
   });
+  return { labels, keep };
 }
 
 async function loadShare() {
@@ -1174,6 +1706,7 @@ function paintShare() {
   if (!data) return;
   const tl = data.timeline;
   themeCharts();
+  bindChartExpands();
 
   if (tl) {
     const k = tl.kpis || {};
@@ -1182,11 +1715,6 @@ function paintShare() {
       `<div class="chip-kpi"><b>${mln(k.forecast_2040 != null ? k.forecast_2040 : k.forecast_2030 || 0)}</b><span>Прогноз к 2040</span></div>`,
       `<div class="chip-kpi"><b>${(k.delta_pct >= 0 ? "+" : "") + (k.delta_pct || 0)}%</b><span>+ к 2040</span></div>`,
     ].join("");
-
-    const cur = tl.current || {};
-    $("share-cash-kpis").innerHTML = (tl.assets || []).map((a) =>
-      `<div class="chip-kpi"><b>${mln(cur[a.id] != null ? cur[a.id] : 0)}</b><span>${a.label}</span></div>`
-    ).join("");
 
     const propKpis = $("share-prop-kpis");
     if (propKpis) {
@@ -1203,68 +1731,40 @@ function paintShare() {
         </article>`;
       }).join("");
     }
-  } else if (data.totals) {
-    $("share-cash-kpis").innerHTML = [
-      `<div class="chip-kpi"><b>${mln(data.totals.cash || 0)}</b><span>Наличные</span></div>`,
-      `<div class="chip-kpi"><b>${mln(data.totals.masha_cash || 0)}</b><span>Накопления Маша</span></div>`,
-      `<div class="chip-kpi"><b>${mln(data.totals.sasha_cash || 0)}</b><span>Накопления Саша</span></div>`,
-      `<div class="chip-kpi"><b>${mln(data.totals.gold || 0)}</b><span>Золото</span></div>`,
-      `<div class="chip-kpi"><b>${mln(data.totals.spb || 0)}</b><span>Недвижимость Петербург</span></div>`,
-      `<div class="chip-kpi"><b>${mln(data.totals.phuket || 0)}</b><span>Недвижимость Пхукет</span></div>`,
-    ].join("");
   }
 
   if (tl) {
-    const filterActive = Array.isArray(state.assetIds);
-    const ids = new Set(filterActive ? state.assetIds : (tl.assets || []).map((a) => a.id));
-    $("asset-filters").innerHTML = tl.assets.map((a, i) =>
-      `<button type="button" class="chip ${filterActive && ids.has(a.id) ? "active" : ""}" data-asset="${a.id}" style="border-color:${assetColor(i)}">${a.label}</button>`
-    ).join("");
-    $("asset-filters").querySelectorAll(".chip").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const id = btn.dataset.asset;
-        if (state.assetIds == null) {
-          state.assetIds = [id];
-        } else {
-          const cur = new Set(state.assetIds);
-          if (cur.has(id)) cur.delete(id);
-          else cur.add(id);
-          state.assetIds = cur.size ? [...cur] : null;
-        }
-        paintShare();
-      });
-    });
-
-    bindAssetYears();
-    syncAssetYearChips();
-    const yearSet = new Set(state.assetYears || []);
-    const years = (tl.years || []).filter((y) => yearSet.has(y));
-    const yearIdx = years.map((y) => tl.years.indexOf(y));
-    const factUntil = tl.fact_until;
-    if ($("show-forecast")) $("show-forecast").checked = state.showForecast;
+    bindTimeline("asset");
+    const { from, to } = clampTimelineRange("asset");
+    const { labels: allLabels, keep } = keepTimelineIndexes(tl, from, to);
+    const labels = keep.map((i) => allLabels[i]);
+    const nowFull = Number.isFinite(tl.now_index) ? tl.now_index : -1;
+    const nowIdx = keep.indexOf(nowFull);
+    const nowMonth = Number(tl.now_month) || 8;
+    const nowLabel = `${MONTHS[nowMonth - 1].slice(0, 3).toLowerCase()} ${String(tl.now_year || 2026).slice(2)}`;
     if ($("show-drivers")) $("show-drivers").checked = state.showDrivers;
 
-    const activeAssets = tl.assets.filter((a) => ids.has(a.id));
-    const datasets = activeAssets.map((a) => {
-      const color = assetColor(tl.assets.findIndex((x) => x.id === a.id));
-      const series = yearIdx.map((idx) => {
+    const datasets = (tl.assets || []).map((a, i) => {
+      const color = assetColor(i);
+      const series = keep.map((idx) => {
         const v = a.series[idx];
         return v == null ? null : v / 1e6;
       });
       return {
         label: a.label,
-        data: series.map((v, j) => (v == null ? null : (years[j] <= factUntil || state.showForecast ? v : null))),
+        data: series,
         borderColor: color,
         backgroundColor: "transparent",
         fill: false,
         tension: 0.25,
         borderWidth: 2,
-        pointRadius: 2,
-        pointHoverRadius: 5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        spanGaps: false,
         segment: {
           borderDash: (ctx) => {
-            const y = years[ctx.p1DataIndex];
-            return y > factUntil ? [6, 4] : undefined;
+            const orig = keep[ctx.p1DataIndex];
+            return orig > nowFull ? [6, 4] : undefined;
           },
         },
       };
@@ -1272,23 +1772,26 @@ function paintShare() {
 
     paintChart("chart-assets", {
       type: "line",
-      data: { labels: years.map(String), datasets },
+      plugins: [nowLinePlugin],
+      data: { labels, datasets },
       options: {
         maintainAspectRatio: false,
-        interaction: chartInteraction(),
+        interaction: { mode: "index", intersect: false },
         plugins: {
           legend: legendOpts(),
           tooltip: {
             enabled: true,
             filter: (item) => item.raw != null,
             callbacks: {
+              title: (items) => items[0] ? fcfMonthTitle(items[0].label) : "",
               afterBody: (items) => {
-                const y = Number(items[0] && items[0].label);
-                return y > factUntil ? "прогноз" : "факт / оценка";
+                const orig = keep[items[0].dataIndex];
+                return orig > nowFull ? "прогноз" : "факт / оценка";
               },
               label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} млн ₽`,
             },
           },
+          nowLine: nowIdx >= 0 ? { index: nowIdx, label: nowLabel } : { index: -1 },
         },
         scales: {
           ...scaleOpts(),
@@ -1297,7 +1800,14 @@ function paintShare() {
             stacked: false,
             title: { display: true, text: "млн ₽", color: cssVar("--muted") },
           },
-          x: { ...scaleOpts().x },
+          x: {
+            ...scaleOpts().x,
+            ticks: {
+              autoSkip: true,
+              maxTicksLimit: 8,
+              maxRotation: 0,
+            },
+          },
         },
       },
     });
@@ -1305,9 +1815,6 @@ function paintShare() {
     const wrap = $("drivers-wrap");
     if (wrap) wrap.classList.toggle("hidden", !state.showDrivers);
     if (state.showDrivers && tl.drivers) {
-      // Курсы 2024→2040 независимо от фильтра годов портфеля
-      const fxYears = tl.years || [];
-      const fxIdx = fxYears.map((_, i) => i);
       const driverKeys = [
         { id: "usd", label: "Доллар, ₽", axis: "y" },
         { id: "thb", label: "Бат, ₽", axis: "y" },
@@ -1315,14 +1822,15 @@ function paintShare() {
       ];
       paintChart("chart-drivers", {
         type: "line",
+        plugins: [nowLinePlugin],
         data: {
-          labels: fxYears.map(String),
+          labels,
           datasets: driverKeys.map((d, i) => {
             const series = (tl.drivers[d.id] || {}).series || [];
             const scale = d.scale || 1;
             return {
               label: d.label,
-              data: fxIdx.map((idx) => {
+              data: keep.map((idx) => {
                 const raw = series[idx];
                 return raw == null ? null : raw / scale;
               }),
@@ -1330,21 +1838,25 @@ function paintShare() {
               backgroundColor: "transparent",
               tension: 0.25,
               borderWidth: 2,
-              pointRadius: 3,
-              pointHoverRadius: 5,
+              pointRadius: 0,
+              pointHoverRadius: 4,
               yAxisID: d.axis,
+              segment: {
+                borderDash: (ctx) => (keep[ctx.p1DataIndex] > nowFull ? [6, 4] : undefined),
+              },
             };
           }),
         },
         options: {
           maintainAspectRatio: false,
-          interaction: chartInteraction(),
+          interaction: { mode: "index", intersect: false },
           plugins: {
             legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
             tooltip: {
               enabled: true,
               filter: (item) => item.raw != null,
               callbacks: {
+                title: (items) => items[0] ? fcfMonthTitle(items[0].label) : "",
                 label: (ctx) => {
                   const v = Number(ctx.raw);
                   if (ctx.dataset.yAxisID === "y1") return `${ctx.dataset.label}: ${v.toFixed(2)}`;
@@ -1352,6 +1864,7 @@ function paintShare() {
                 },
               },
             },
+            nowLine: nowIdx >= 0 ? { index: nowIdx, label: nowLabel } : { index: -1 },
           },
           scales: {
             y: {
@@ -1363,7 +1876,14 @@ function paintShare() {
               grid: { drawOnChartArea: false },
               title: { display: true, text: "золото", color: cssVar("--muted") },
             },
-            x: scaleOpts().x,
+            x: {
+              ...scaleOpts().x,
+              ticks: {
+                autoSkip: true,
+                maxTicksLimit: 12,
+                maxRotation: 0,
+              },
+            },
           },
         },
       });
@@ -1376,8 +1896,8 @@ function paintShare() {
   const assets = (tl && tl.assets) || [];
   const cur = (tl && tl.current) || {};
   const donutItems = assets
-    .map((a, i) => ({ label: a.label, value: cur[a.id] || 0, color: assetColor(i) }))
-    .filter((x) => x.value > 0);
+    .map((a, i) => ({ id: a.id, label: a.label, value: cur[a.id] || 0, color: assetColor(i) }))
+    .filter((x) => x.value > 0 && x.id !== "phuket");
   paintChart("chart-savings", {
     type: "doughnut",
     data: {
