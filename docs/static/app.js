@@ -12,6 +12,9 @@ const FALLBACK_TREE = [
   { id: "income", label: "Доходы", tone: "sky", categories: [], children: [] },
 ];
 
+const ALL_FCF_YEARS = Array.from({ length: 2040 - 2026 + 1 }, (_, i) => 2026 + i);
+const ALL_ASSET_YEARS = Array.from({ length: 2040 - 2024 + 1 }, (_, i) => 2024 + i);
+
 let state = {
   importId: null,
   txs: [],
@@ -22,13 +25,13 @@ let state = {
   filterGroups: [],
   selectedCats: [],
   sliceDetail: false,
-  fcfYears: [2026, 2027, 2028],
+  fcfYears: [...ALL_FCF_YEARS],
   merchants: [],
   share: null,
   assetIds: null,
   showForecast: true,
   showDrivers: false,
-  assetYears: [2024, 2025, 2026, 2027, 2028, 2029, 2030],
+  assetYears: [...ALL_ASSET_YEARS],
   shareBound: false,
   fcfYearsBound: false,
   assetYearsBound: false,
@@ -77,7 +80,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "21";
+const SNAPSHOT_VER = "22";
 
 function isLocalApi() {
   return location.hostname === "127.0.0.1" || location.hostname === "localhost";
@@ -209,32 +212,45 @@ $("btn-slice-detail").addEventListener("click", () => {
   paintSlice();
 });
 
+function ensureYearChips(box, years, selected, resetId) {
+  if (!box) return;
+  const sel = new Set(selected || []);
+  const labelText = (box.querySelector(".year-picks-label") || {}).textContent || "Годы";
+  box.innerHTML =
+    `<span class="year-picks-label">${labelText}</span>` +
+    years.map((y) =>
+      `<button type="button" class="chip year-chip ${sel.has(y) ? "active" : ""}" data-year="${y}" aria-pressed="${sel.has(y) ? "true" : "false"}">${y}</button>`
+    ).join("") +
+    `<button type="button" class="chip year-reset" id="${resetId}">Сбросить</button>`;
+}
+
 function bindFcfYears() {
   if (state.fcfYearsBound) return;
   state.fcfYearsBound = true;
   const box = $("fcf-years");
+  ensureYearChips(box, ALL_FCF_YEARS, state.fcfYears, "btn-fcf-reset");
   if (box) {
-    box.querySelectorAll(".year-chip").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const y = Number(btn.dataset.year);
-        // Клик выбирает год (фокус), а не снимает его с мультивыбора
-        const cur = state.fcfYears || [];
-        if (cur.length === 1 && cur[0] === y) return;
-        if (cur.length === 3) {
-          state.fcfYears = [y];
-        } else if (cur.includes(y)) {
-          state.fcfYears = [y];
-        } else {
-          state.fcfYears = [...cur, y].sort((a, b) => a - b);
-        }
-        paintCumul();
-      });
+    box.addEventListener("click", (e) => {
+      const btn = e.target.closest(".year-chip");
+      if (!btn || !box.contains(btn)) return;
+      const y = Number(btn.dataset.year);
+      const cur = state.fcfYears || [];
+      const all = ALL_FCF_YEARS.length;
+      if (cur.length === 1 && cur[0] === y) return;
+      if (cur.length === all) {
+        state.fcfYears = [y];
+      } else if (cur.includes(y)) {
+        state.fcfYears = [y];
+      } else {
+        state.fcfYears = [...cur, y].sort((a, b) => a - b);
+      }
+      paintCumul();
     });
   }
   const reset = $("btn-fcf-reset");
   if (reset) {
     reset.addEventListener("click", () => {
-      state.fcfYears = [2026, 2027, 2028];
+      state.fcfYears = [...ALL_FCF_YEARS];
       paintCumul();
     });
   }
@@ -1076,13 +1092,6 @@ function bindShareControls() {
       paintShare();
     });
   }
-  const yearsReset = $("btn-asset-years-reset");
-  if (yearsReset) {
-    yearsReset.addEventListener("click", () => {
-      state.assetYears = [2024, 2025, 2026, 2027, 2028, 2029, 2030];
-      paintShare();
-    });
-  }
   const filtersReset = $("btn-asset-filters-reset");
   if (filtersReset) {
     filtersReset.addEventListener("click", () => {
@@ -1097,22 +1106,31 @@ function bindAssetYears() {
   if (state.assetYearsBound) return;
   state.assetYearsBound = true;
   const box = $("asset-years");
+  ensureYearChips(box, ALL_ASSET_YEARS, state.assetYears, "btn-asset-years-reset");
   if (!box) return;
-  box.querySelectorAll(".year-chip").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const y = Number(btn.dataset.year);
-      const cur = state.assetYears || [];
-      if (cur.length === 1 && cur[0] === y) return;
-      if (cur.length === 7) {
-        state.assetYears = [y];
-      } else if (cur.includes(y)) {
-        state.assetYears = [y];
-      } else {
-        state.assetYears = [...cur, y].sort((a, b) => a - b);
-      }
+  box.addEventListener("click", (e) => {
+    const btn = e.target.closest(".year-chip");
+    if (!btn || !box.contains(btn)) return;
+    const y = Number(btn.dataset.year);
+    const cur = state.assetYears || [];
+    const all = ALL_ASSET_YEARS.length;
+    if (cur.length === 1 && cur[0] === y) return;
+    if (cur.length === all) {
+      state.assetYears = [y];
+    } else if (cur.includes(y)) {
+      state.assetYears = [y];
+    } else {
+      state.assetYears = [...cur, y].sort((a, b) => a - b);
+    }
+    paintShare();
+  });
+  const yearsReset = $("btn-asset-years-reset");
+  if (yearsReset) {
+    yearsReset.addEventListener("click", () => {
+      state.assetYears = [...ALL_ASSET_YEARS];
       paintShare();
     });
-  });
+  }
 }
 
 function syncAssetYearChips() {
@@ -1161,8 +1179,8 @@ function paintShare() {
     const k = tl.kpis || {};
     $("share-hero-kpis").innerHTML = [
       `<div class="chip-kpi"><b>${mln(k.now || 0)}</b><span>Сейчас</span></div>`,
-      `<div class="chip-kpi"><b>${mln(k.forecast_2030 || 0)}</b><span>Прогноз к 2030</span></div>`,
-      `<div class="chip-kpi"><b>${(k.delta_pct >= 0 ? "+" : "") + (k.delta_pct || 0)}%</b><span>+ к 2030</span></div>`,
+      `<div class="chip-kpi"><b>${mln(k.forecast_2040 != null ? k.forecast_2040 : k.forecast_2030 || 0)}</b><span>Прогноз к 2040</span></div>`,
+      `<div class="chip-kpi"><b>${(k.delta_pct >= 0 ? "+" : "") + (k.delta_pct || 0)}%</b><span>+ к 2040</span></div>`,
     ].join("");
 
     const cur = tl.current || {};
@@ -1287,7 +1305,7 @@ function paintShare() {
     const wrap = $("drivers-wrap");
     if (wrap) wrap.classList.toggle("hidden", !state.showDrivers);
     if (state.showDrivers && tl.drivers) {
-      // Курсы 2024→2030 независимо от фильтра годов портфеля
+      // Курсы 2024→2040 независимо от фильтра годов портфеля
       const fxYears = tl.years || [];
       const fxIdx = fxYears.map((_, i) => i);
       const driverKeys = [

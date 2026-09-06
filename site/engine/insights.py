@@ -17,8 +17,8 @@ from .categories import (
 )
 from .excel_fcf import read_fact_cumul_series, read_plan_horizon
 
-# Горизонт кумулятива FCF: факт 2026, план до конца 2028
-FCF_END_YEAR = 2028
+# Горизонт кумулятива FCF: факт 2026, план до конца 2040
+FCF_END_YEAR = 2040
 BASE_YEAR = 2026
 
 # Как в Excel ИТОГО: зарплаты/премии/продажа − расходы (без займов и подарков)
@@ -57,7 +57,7 @@ def last_complete_month(rows, meta_closed: int | None = None) -> int:
 
 
 def _build_fcf_horizon(rows, closed: int) -> dict:
-    """Факт 2026 (до closed); план 2026–2028 из Excel КУМУЛЯТИВНЫЙ ИТОГ."""
+    """Факт 2026 (до closed); план 2026–2040 из Excel КУМУЛЯТИВНЫЙ ИТОГ."""
     n_months = (FCF_END_YEAR - BASE_YEAR + 1) * 12
     labels = []
     series_plan = []
@@ -308,17 +308,26 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
         end_2028_txt = (
             _mln(excel_plan["end_2028"])
             if excel_plan and excel_plan.get("end_2028") is not None
-            else "≈2 млн ₽"
+            else "—"
+        )
+        end_2040_txt = (
+            _mln(excel_plan["end_2040"])
+            if excel_plan and excel_plan.get("end_2040") is not None
+            else (
+                _mln(horizon["series_plan"][-1] * 1e6)
+                if horizon.get("series_plan") and horizon["series_plan"][-1] is not None
+                else "—"
+            )
         )
         dip_2026 = horizon["series_plan"][11] if len(horizon["series_plan"]) > 11 else None
         conclusions.append(
             {
                 "tone": "good",
-                "title": "План FCF: просадка 2026 → восстановление к 2027",
+                "title": "План FCF: горизонт до 2040",
                 "text": (
                     f"К дек. 2026 план ~{_mln((dip_2026 or 0) * 1e6) if dip_2026 is not None else '—'}"
-                    f" из‑за Таиланда и крупных покупок, но к дек. 2027 уже {_mln(plan_end_2027)}; "
-                    f"к концу 2028 — {end_2028_txt}. Горизонт важнее одного «минусового» месяца."
+                    f" из‑за Таиланда и крупных покупок; к дек. 2027 — {_mln(plan_end_2027)}, "
+                    f"к концу 2028 — {end_2028_txt}, к 2040 — {end_2040_txt}."
                 ),
             }
         )

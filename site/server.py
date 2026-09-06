@@ -119,7 +119,7 @@ def api_patch_ledger(body: CellPatch):
 @app.get("/api/analytics")
 def api_analytics(year: int = 2026):
     conn = init_db()
-    # План 2026–2028 нужен для событий/горизонта; факт — year
+    # План 2026–2040 нужен для событий/горизонта; факт — year
     rows = ledger_rows(conn, None)
     closed = int(get_meta(conn, "closed_month", "7") or 7)
     data = build_insights(rows, year, closed)

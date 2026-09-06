@@ -3,6 +3,7 @@
 - Золото: 100 г × учётная цена ЦБ
 - Накопления Маша/Саша: старт + потоки FCF факт (без вычета парковки из баланса Маши)
 - Пхукет в портфеле только с 2029 (котлован 2026, стройка с конца 2026)
+- Горизонт прогноза: 2024–2040
 """
 
 from __future__ import annotations
@@ -10,7 +11,8 @@ from __future__ import annotations
 from .categories import START_CAPITAL
 from .excel_fcf import read_fact_cumul_series, read_savings_balances
 
-YEARS = list(range(2024, 2031))
+HORIZON_END = 2040
+YEARS = list(range(2024, HORIZON_END + 1))
 FACT_UNTIL = 2026
 GOLD_GRAMS = 100.0
 
@@ -23,39 +25,47 @@ THAI_YEAR = 2026
 # В «Сейчас» и портфеле до 2028 Пхукет не учитываем
 PHUKET_COUNT_FROM = 2029
 
-KUINDZHI_INDEX = {
-    2024: 100.0,
-    2025: 108.0,
-    2026: 118.0,
-    2027: 124.0,
-    2028: 130.0,
-    2029: 136.0,
-    2030: 142.0,
-}
-KUINDZHI_PARKING_INDEX = {
-    2024: 100.0,
-    2025: 110.0,
-    2026: 122.0,
-    2027: 128.0,
-    2028: 134.0,
-    2029: 140.0,
-    2030: 146.0,
-}
 
-# Продажи с дек 2025, котлован / старт стройки — конец 2026 → индекс с 2026
-BANGTAO_INDEX = {
-    2024: 0.0,
-    2025: 0.0,
-    2026: 100.0,   # котлован
-    2027: 112.0,   # активное строительство
-    2028: 128.0,
-    2029: 145.0,   # ориентир к сдаче / учёт в портфеле
-    2030: 158.0,
-}
+def _extend_linear(base: dict[int, float], end: int, step: float) -> dict[int, float]:
+    out = dict(base)
+    last_y = max(out)
+    last_v = float(out[last_y])
+    for y in range(last_y + 1, end + 1):
+        last_v = last_v + step
+        out[y] = round(last_v, 4)
+    return out
 
-FX_USD = {2024: 92.0, 2025: 90.0, 2026: 86.6, 2027: 88.0, 2028: 90.0, 2029: 92.0, 2030: 94.0}
-FX_THB = {2024: 2.65, 2025: 2.60, 2026: 2.63, 2027: 2.66, 2028: 2.70, 2029: 2.74, 2030: 2.78}
-GOLD_GRAM = {2024: 7800, 2025: 9800, 2026: 12240, 2027: 13000, 2028: 13800, 2029: 14600, 2030: 15400}
+
+KUINDZHI_INDEX = _extend_linear(
+    {2024: 100.0, 2025: 108.0, 2026: 118.0, 2027: 124.0, 2028: 130.0, 2029: 136.0, 2030: 142.0},
+    HORIZON_END,
+    6.0,
+)
+KUINDZHI_PARKING_INDEX = _extend_linear(
+    {2024: 100.0, 2025: 110.0, 2026: 122.0, 2027: 128.0, 2028: 134.0, 2029: 140.0, 2030: 146.0},
+    HORIZON_END,
+    6.0,
+)
+BANGTAO_INDEX = _extend_linear(
+    {2024: 0.0, 2025: 0.0, 2026: 100.0, 2027: 112.0, 2028: 128.0, 2029: 145.0, 2030: 158.0},
+    HORIZON_END,
+    10.0,
+)
+FX_USD = _extend_linear(
+    {2024: 92.0, 2025: 90.0, 2026: 86.6, 2027: 88.0, 2028: 90.0, 2029: 92.0, 2030: 94.0},
+    HORIZON_END,
+    2.0,
+)
+FX_THB = _extend_linear(
+    {2024: 2.65, 2025: 2.60, 2026: 2.63, 2027: 2.66, 2028: 2.70, 2029: 2.74, 2030: 2.78},
+    HORIZON_END,
+    0.04,
+)
+GOLD_GRAM = _extend_linear(
+    {2024: 7800, 2025: 9800, 2026: 12240, 2027: 13000, 2028: 13800, 2029: 14600, 2030: 15400},
+    HORIZON_END,
+    800,
+)
 
 
 def _sum_cat(rows, months, cats, field) -> float:
@@ -204,13 +214,15 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
 
     i_now = YEARS.index(2026)
     i_2030 = YEARS.index(2030)
+    i_2040 = YEARS.index(HORIZON_END)
     portfolio = []
     for i in range(len(YEARS)):
         vals = [a["series"][i] for a in assets if a["series"][i] is not None]
         portfolio.append(round(sum(vals)) if vals else None)
 
     now = portfolio[i_now] or 0
-    then = portfolio[i_2030] or 0
+    then_2030 = portfolio[i_2030] or 0
+    then = portfolio[i_2040] or 0
     current = {a["id"]: (a["series"][i_now] or 0) for a in assets}
 
     property_shares = [
@@ -254,6 +266,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         "thai_paid": thai_paid,
         "thai_contract": THAI_BUY,
         "phuket_count_from": PHUKET_COUNT_FROM,
+        "horizon_end": HORIZON_END,
         "drivers": {
             "usd": {"unit": "₽/$", "series": [usd[y] for y in YEARS]},
             "thb": {"unit": "₽/฿", "series": [thb[y] for y in YEARS]},
@@ -263,8 +276,10 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         },
         "kpis": {
             "now": now,
-            "forecast_2030": then,
-            "delta_to_2030": then - now,
+            "forecast_2030": then_2030,
+            "forecast_2040": then,
+            "delta_to_2030": then_2030 - now,
+            "delta_to_2040": then - now,
             "delta_pct": round((then / now - 1) * 100, 1) if now else 0,
             "breakdown_now": {
                 "cash": current["cash"],
@@ -281,7 +296,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "Маша = старт + потоки «Маша накопления» + остаток кумулятива; Саша = накопления + инвестиции; наличные = «Доллары дома».",
             "Куинджи: покупка × индекс к 2026.",
             f"Пхукет: рынок на котловане; в сумме «Сейчас» с {PHUKET_COUNT_FROM}.",
-            "2027–2030 — сценарий, не инвестсовет.",
+            f"2027–{HORIZON_END} — сценарий, не инвестсовет.",
         ],
         "sources": [
             "FCF 2026 ФАКТ — кумулятив, накопления, доллары, инвестиции",

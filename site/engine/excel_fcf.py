@@ -10,19 +10,23 @@ import openpyxl
 from .seed_excel import find_excel, _num
 
 BASE_YEAR = 2026
-PLAN_END_YEAR = 2028
+PLAN_END_YEAR = 2040
 PLAN_SHEET = "FCF 2026 ПЛАН"
 FACT_SHEET = "FCF 2026 ФАКТ"
 
-PLAN_CUMUL_ROW = 50
-PLAN_TOTAL_ROW = 48
-FACT_CUMUL_ROW = 55
-FACT_TOTAL_ROW = 53
+PLAN_CUMUL_ROW = 51
+PLAN_TOTAL_ROW = 49
+FACT_CUMUL_ROW = 56
+FACT_TOTAL_ROW = 54
 # Балансы и месячные потоки накоплений на ФАКТ
-FACT_MASHA_BAL_ROW = 13
-FACT_SASHA_BAL_ROW = 14
-FACT_MASHA_FLOW_ROW = 18
-FACT_SASHA_FLOW_ROW = 19
+FACT_MASHA_BAL_ROW = 14
+FACT_SASHA_BAL_ROW = 15
+FACT_MASHA_FLOW_ROW = 19
+FACT_SASHA_FLOW_ROW = 20
+FACT_CASH_BAL_ROW = 16
+FACT_CASH_FLOW_ROW = 21
+FACT_SASHA_INV_BAL_ROW = 18
+FACT_SASHA_INV_FLOW_ROW = 23
 
 
 def _plan_col(year: int, month: int) -> int:
@@ -49,7 +53,7 @@ def _wb(path: Path | None = None):
 
 
 def read_plan_horizon(path: Path | None = None) -> dict | None:
-    """План: кумулятив и месячный ИТОГО за 2026–2028 из листа FCF ПЛАН."""
+    """План: кумулятив и месячный ИТОГО за 2026–2040 из листа FCF ПЛАН."""
     wb, excel = _wb(path)
     if not wb or PLAN_SHEET not in wb.sheetnames:
         return None
@@ -67,7 +71,8 @@ def read_plan_horizon(path: Path | None = None) -> dict | None:
         "monthly": monthly,
         "excel": excel.name if excel else None,
         "end_2027": cumul[23] if len(cumul) > 23 else None,
-        "end_2028": cumul[-1] if cumul else None,
+        "end_2028": cumul[35] if len(cumul) > 35 else None,
+        "end_2040": cumul[-1] if cumul else None,
     }
 
 
@@ -107,8 +112,8 @@ def read_savings_balances(closed_month: int, path: Path | None = None) -> dict |
 
     masha = start_plus_flows(FACT_MASHA_BAL_ROW, FACT_MASHA_FLOW_ROW)
     sasha_sav = start_plus_flows(FACT_SASHA_BAL_ROW, FACT_SASHA_FLOW_ROW)
-    sasha_inv = start_plus_flows(17, 22)  # Саша инвестиции
-    cash = start_plus_flows(15, 20)  # Доллары дома
+    sasha_inv = start_plus_flows(FACT_SASHA_INV_BAL_ROW, FACT_SASHA_INV_FLOW_ROW)
+    cash = start_plus_flows(FACT_CASH_BAL_ROW, FACT_CASH_FLOW_ROW)
     return {
         "masha": masha,
         "sasha": sasha_sav + sasha_inv,
