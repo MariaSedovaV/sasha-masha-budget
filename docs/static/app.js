@@ -62,6 +62,7 @@ function applyTheme(theme) {
     paintSlice();
   }
   if (state.share) paintShare();
+  syncAgTheme();
 }
 
 document.querySelectorAll(".tab").forEach((btn) => {
@@ -75,7 +76,10 @@ document.querySelectorAll(".tab").forEach((btn) => {
     if (view === "analytics") loadAnalytics();
     else setChartExpanded(null);
     if (view === "share") loadShare();
-    if (view === "data") loadDataTab();
+    if (view === "data") {
+      loadDataTab();
+      requestAnimationFrame(() => resizeDataGrids());
+    }
   });
 });
 
@@ -88,7 +92,44 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "31";
+const SNAPSHOT_VER = "32";
+let txGridApi = null;
+let ledgerGridApi = null;
+let txGridQuiet = false;
+let ledgerGridQuiet = false;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function parseMoneyInput(raw, fallback) {
+  if (raw == null || raw === "") return 0;
+  const n = Number(String(raw).replace(/₽/g, "").replace(/\u00a0/g, "").replace(/\s/g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function agThemeName() {
+  return currentTheme() === "light" ? "ag-theme-quartz" : "ag-theme-quartz-dark";
+}
+
+function syncAgTheme() {
+  const cls = agThemeName();
+  document.querySelectorAll(".ag-grid-host").forEach((el) => {
+    el.classList.remove("ag-theme-quartz", "ag-theme-quartz-dark");
+    el.classList.add(cls);
+  });
+}
+
+function resizeDataGrids() {
+  if (txGridApi && typeof txGridApi.sizeColumnsToFit === "function") txGridApi.sizeColumnsToFit();
+  if (ledgerGridApi && typeof ledgerGridApi.sizeColumnsToFit === "function") ledgerGridApi.sizeColumnsToFit();
+}
+
+function agGridAvailable() {
+  return window.agGrid && typeof agGrid.createGrid === "function";
+}
 
 function isLocalApi() {
   return location.hostname === "127.0.0.1" || location.hostname === "localhost";
@@ -568,47 +609,181 @@ function catSelect(current) {
   ).join("");
 }
 
-function renderTx() {
-  const q = ($("tx-search").value || "").toLowerCase();
-  const body = document.querySelector("#tx-table tbody");
-  const rows = state.txs.filter((t) => t.month === state.month && (!q || (t.description || "").toLowerCase().includes(q)));
-  body.innerHTML = rows.map((t) => {
-    const cls = t.amount >= 0 ? "in" : "out";
-    const off = t.included ? "" : "off";
-    return `<tr class="${cls} ${off}" data-id="${t.id}">
-      <td><input type="checkbox" ${t.included ? "checked" : ""} data-act="inc"></td>
-      <td>${t.op_date}<div class="conf">${t.op_time || ""} · карта ${t.card || "—"}</div></td>
-      <td class="num">${money(t.amount)}</td>
-      <td>${t.description || ""}<div class="conf">уверенность ${t.confidence}%</div></td>
-      <td><select data-act="cat">${catSelect(t.category)}</select></td>
-    </tr>`;
-  }).join("") || `<tr><td colspan="5" class="conf">Нет операций за ${MONTHS[state.month - 1]}. Загрузите справку или выберите импорт слева.</td></tr>`;
-  body.querySelectorAll("tr[data-id]").forEach((tr) => {
-    const id = Number(tr.dataset.id);
-    tr.querySelector('[data-act="inc"]').addEventListener("change", async (e) => {
+function txNoRowsText() {
+  return `Нет операций за ${MONTHS[state.month - 1]}. Загрузите справку или выберите импорт слева.`;
+}
+
+function txRowData() {
+  const q = (($("tx-search") && $("tx-search").value) || "").toLowerCase();
+  return (state.txs || [])
+    .filter((t) => t.month === state.month && (!q || (t.description || "").toLowerCase().includes(q)))
+    .map((t) => ({ ...t, included: !!t.included }));
+}
+
+function txIncludedRenderer(p) {
+  const inp = document.createElement("input");
+  inp.type = "checkbox";
+  inp.checked = !!p.value;
+  inp.setAttribute("aria-label", "Учесть операцию");
+  inp.addEventListener("click", (ev) => ev.stopPropagation());
+  inp.addEventListener("change", () => {
+    if (!!p.value === inp.checked) return;
+    p.node.setDataValue("included", inp.checked);
+  });
+  return inp;
+}
+
+function txDateRenderer(p) {
+  const t = p.data || {};
+  return `${escapeHtml(t.op_date || "")}<div class="conf">${escapeHtml(t.op_time || "")} · карта ${escapeHtml(t.card || "—")}</div>`;
+}
+
+function txDescRenderer(p) {
+  const t = p.data || {};
+  return `${escapeHtml(t.description || "")}<div class="conf">уверенность ${escapeHtml(t.confidence ?? "—")}%</div>`;
+}
+
+async function onTxCellChanged(e) {
+  if (txGridQuiet || !e.data || e.newValue === e.oldValue) return;
+  const id = e.data.id;
+  const revert = () => {
+    txGridQuiet = true;
+    e.data[e.colDef.field] = e.oldValue;
+    e.api.refreshCells({ rowNodes: [e.node], columns: [e.column], force: true });
+    txGridQuiet = false;
+  };
+  if (e.colDef.field === "included") {
+    try {
       await api(`/api/transactions/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ included: e.target.checked }),
+        body: JSON.stringify({ included: e.newValue ? 1 : 0 }),
       });
       const tx = state.txs.find((x) => x.id === id);
-      tx.included = e.target.checked ? 1 : 0;
-      renderTx();
+      if (tx) tx.included = e.newValue ? 1 : 0;
+      e.api.redrawRows({ rowNodes: [e.node] });
       renderPropose();
-    });
-    tr.querySelector('[data-act="cat"]').addEventListener("change", async (e) => {
+    } catch (err) {
+      revert();
+      $("upload-status").textContent = "Не записалось: " + (err.message || err);
+    }
+    return;
+  }
+  if (e.colDef.field === "category") {
+    try {
       await api(`/api/transactions/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category: e.target.value }),
+        body: JSON.stringify({ category: e.newValue }),
       });
       const tx = state.txs.find((x) => x.id === id);
-      tx.category = e.target.value;
-      tx.confidence = 99;
+      if (tx) {
+        tx.category = e.newValue;
+        tx.confidence = 99;
+      }
+      e.data.confidence = 99;
+      e.api.refreshCells({ rowNodes: [e.node], columns: ["description"], force: true });
       renderPropose();
       loadMerchants();
-    });
+    } catch (err) {
+      revert();
+      $("upload-status").textContent = "Не записалось: " + (err.message || err);
+    }
+  }
+}
+
+function ensureTxGrid() {
+  const el = $("tx-grid");
+  if (!el) return null;
+  syncAgTheme();
+  if (!agGridAvailable()) {
+    el.innerHTML = "<p class='hint'>Не загрузился AG Grid. Проверьте сеть и обновите страницу.</p>";
+    return null;
+  }
+  if (txGridApi) return txGridApi;
+  txGridApi = agGrid.createGrid(el, {
+    rowData: [],
+    getRowId: (p) => String(p.data.id),
+    rowHeight: 48,
+    headerHeight: 36,
+    singleClickEdit: true,
+    stopEditingWhenCellsLoseFocus: true,
+    animateRows: false,
+    enableBrowserTooltips: true,
+    popupParent: document.body,
+    overlayNoRowsTemplate: `<span class="ag-overlay-msg">${txNoRowsText()}</span>`,
+    defaultColDef: {
+      sortable: true,
+      resizable: true,
+      filter: false,
+      suppressHeaderMenuButton: true,
+      suppressMenu: true,
+    },
+    getRowClass: (p) => {
+      const cls = [];
+      if (!p.data) return cls;
+      cls.push(p.data.amount >= 0 ? "tx-in" : "tx-out");
+      if (!p.data.included) cls.push("tx-off");
+      return cls;
+    },
+    onCellValueChanged: onTxCellChanged,
+    onGridSizeChanged: (p) => p.api.sizeColumnsToFit(),
+    onFirstDataRendered: (p) => p.api.sizeColumnsToFit(),
+    columnDefs: [
+      {
+        field: "included",
+        headerName: "",
+        width: 52,
+        maxWidth: 56,
+        sortable: false,
+        editable: false,
+        cellRenderer: txIncludedRenderer,
+      },
+      {
+        field: "op_date",
+        headerName: "Дата",
+        minWidth: 128,
+        width: 148,
+        cellRenderer: txDateRenderer,
+        tooltipValueGetter: (p) => p.data ? `${p.data.op_date || ""} ${p.data.op_time || ""}` : "",
+      },
+      {
+        field: "amount",
+        headerName: "Сумма",
+        minWidth: 110,
+        width: 120,
+        type: "numericColumn",
+        valueFormatter: (p) => money(p.value || 0),
+        cellClass: (p) => (p.value >= 0 ? "num tx-amt-in" : "num tx-amt-out"),
+      },
+      {
+        field: "description",
+        headerName: "Описание",
+        flex: 1,
+        minWidth: 180,
+        cellRenderer: txDescRenderer,
+        tooltipValueGetter: (p) => (p.data && p.data.description) || "",
+      },
+      {
+        field: "category",
+        headerName: "Статья",
+        minWidth: 170,
+        width: 210,
+        editable: true,
+        cellEditor: "agSelectCellEditor",
+        cellEditorParams: () => ({ values: state.categories || [] }),
+      },
+    ],
   });
+  return txGridApi;
+}
+
+function renderTx() {
+  const api = ensureTxGrid();
+  if (!api) return;
+  api.setGridOption("overlayNoRowsTemplate", `<span class="ag-overlay-msg">${txNoRowsText()}</span>`);
+  api.setGridOption("rowData", txRowData());
+  requestAnimationFrame(() => api.sizeColumnsToFit());
 }
 
 function currentFact(category) {
@@ -659,12 +834,18 @@ async function loadDataTab() {
   renderLedger(state.ledger);
   await Promise.all([loadImports(), loadMerchants()]);
   if (!state.importId) {
-    const imports = await api("/api/imports");
-    if (imports[0]) await openImport(imports[0].id);
+    try {
+      const imports = await api("/api/imports");
+      if (imports[0]) await openImport(imports[0].id);
+    } catch {
+      renderTx();
+    }
   } else {
     renderTx();
     renderPropose();
   }
+  if (!txGridApi) renderTx();
+  requestAnimationFrame(() => resizeDataGrids());
 }
 
 async function loadImports() {
@@ -826,7 +1007,7 @@ async function loadAnalytics() {
   const kpis = $("budget-kpis");
   if (kpis) {
     kpis.innerHTML = [
-      `<div class="chip-kpi"><b>${mln(an.cumul_fact)}</b><span>факт FCF · ${closedShort}</span></div>`,
+      `<div class="chip-kpi"><b>${mln(an.cumul_fact)}</b><span>факт CFCF · ${closedShort}</span></div>`,
       `<div class="chip-kpi"><b>${dlt >= 0 ? "+" : "−"}${Math.abs(dlt / 1000).toFixed(0)} тыс.</b><span>к плану на ${closedShort}</span></div>`,
       `<div class="chip-kpi"><b>${mln(an.net_worth)}</b><span>FCF + оплаченное жильё</span></div>`,
     ].join("");
@@ -905,6 +1086,13 @@ function mlnShort(v) {
   return Number(v).toFixed(2).replace(".", ",");
 }
 
+function mlnSigned(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  const n = Number(v);
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  return sign + Math.abs(n).toFixed(2).replace(".", ",");
+}
+
 const fcfCrosshairPlugin = {
   id: "fcfCrosshair",
   afterDatasetsDraw(chart) {
@@ -917,8 +1105,9 @@ const fcfCrosshairPlugin = {
       const val = ds && ds.data ? ds.data[a.index] : null;
       return ds && !ds.isEvent && val != null && !Number.isNaN(Number(val));
     });
-    const factPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "FCF факт");
-    const main = factPt || candidates[0] || active.find((a) => a.element) || active[0];
+    const factPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "CFCF факт");
+    const planPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "CFCF план");
+    const main = factPt || planPt || candidates[0] || active.find((a) => a.element) || active[0];
     if (!main || !main.element) return;
     const x = main.element.x;
     const y = main.element.y;
@@ -1033,6 +1222,8 @@ function renderFcfHover(context, meta) {
   const idx = tooltip.dataPoints[0].dataIndex;
   const fact = meta.fact[idx];
   const plan = meta.plan[idx];
+  const fcfFact = meta.fcfFact ? meta.fcfFact[idx] : null;
+  const fcfPlan = meta.fcfPlan ? meta.fcfPlan[idx] : null;
   const incFact = meta.incomeFact ? meta.incomeFact[idx] : null;
   const incPlan = meta.incomePlan ? meta.incomePlan[idx] : null;
   const expFact = meta.expenseFact ? meta.expenseFact[idx] : null;
@@ -1040,10 +1231,19 @@ function renderFcfHover(context, meta) {
   const evs = (meta.events || []).filter((e) => e.visIndex === idx);
   const rows = [];
   if (fact != null) {
-    rows.push(`<div class="chart-hover-row"><i class="swatch fact"></i><span>FCF факт</span><b>${mlnShort(fact)} <em>млн</em></b></div>`);
+    rows.push(`<div class="chart-hover-row"><i class="swatch fact"></i><span>CFCF факт</span><b>${mlnShort(fact)} <em>млн</em></b></div>`);
   }
   if (plan != null) {
-    rows.push(`<div class="chart-hover-row"><i class="swatch plan"></i><span>FCF план</span><b>${mlnShort(plan)} <em>млн</em></b></div>`);
+    rows.push(`<div class="chart-hover-row"><i class="swatch plan"></i><span>CFCF план</span><b>${mlnShort(plan)} <em>млн</em></b></div>`);
+  }
+  if (fcfFact != null || fcfPlan != null) {
+    rows.push(`<div class="chart-hover-split"></div>`);
+  }
+  if (fcfFact != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch fcf-fact"></i><span>FCF факт</span><b>${mlnSigned(fcfFact)} <em>млн</em></b></div>`);
+  }
+  if (fcfPlan != null) {
+    rows.push(`<div class="chart-hover-row"><i class="swatch fcf-plan"></i><span>FCF план</span><b>${mlnSigned(fcfPlan)} <em>млн</em></b></div>`);
   }
   if (incFact != null) {
     rows.push(`<div class="chart-hover-row"><i class="swatch income"></i><span>Доходы факт</span><b>${mlnShort(incFact)} <em>млн</em></b></div>`);
@@ -1062,7 +1262,13 @@ function renderFcfHover(context, meta) {
     const d = fact - plan;
     const cls = d >= 0 ? "up" : "down";
     const sign = d >= 0 ? "+" : "−";
-    deltaHtml = `<div class="chart-hover-delta ${cls}">${sign}${mlnShort(Math.abs(d))} к плану FCF</div>`;
+    deltaHtml += `<div class="chart-hover-delta ${cls}">${sign}${mlnShort(Math.abs(d))} к плану CFCF</div>`;
+  }
+  if (fcfFact != null && fcfPlan != null) {
+    const d = fcfFact - fcfPlan;
+    const cls = d >= 0 ? "up" : "down";
+    const sign = d >= 0 ? "+" : "−";
+    deltaHtml += `<div class="chart-hover-delta ${cls}">${sign}${mlnShort(Math.abs(d))} к плану FCF</div>`;
   }
   const eventsHtml = evs.map((e) =>
     `<div class="chart-hover-event tone-${e.tone || "gold"}">${e.label}${e.detail ? " · " + e.detail : ""}</div>`
@@ -1108,6 +1314,7 @@ function paintCumul() {
   const muted = cssVar("--muted");
   const sage = cssVar("--sage");
   const rose = cssVar("--rose");
+  const sky = cssVar("--sky") || "#8aa4c7";
   const { from, to } = clampTimelineRange("fcf");
 
   let labels = [];
@@ -1117,8 +1324,15 @@ function paintCumul() {
   let incomeFact = [];
   let expensePlan = [];
   let expenseFact = [];
+  let fcfPlan = [];
+  let fcfFact = [];
   let events = [];
   let keep = [];
+
+  const netFlow = (inc, exp) => {
+    if (inc == null && exp == null) return null;
+    return (Number(inc) || 0) + (Number(exp) || 0);
+  };
 
   if (hz && Array.isArray(hz.labels)) {
     hz.labels.forEach((lab, i) => {
@@ -1132,6 +1346,14 @@ function paintCumul() {
     incomeFact = keep.map((i) => (hz.series_income_fact || [])[i]);
     expensePlan = keep.map((i) => (hz.series_expense_plan || [])[i]);
     expenseFact = keep.map((i) => (hz.series_expense_fact || [])[i]);
+    fcfPlan = keep.map((i, vis) => {
+      const v = (hz.series_fcf_plan || [])[i];
+      return v == null ? netFlow(incomePlan[vis], expensePlan[vis]) : v;
+    });
+    fcfFact = keep.map((i, vis) => {
+      const v = (hz.series_fcf_fact || [])[i];
+      return v == null ? netFlow(incomeFact[vis], expenseFact[vis]) : v;
+    });
     const indexMap = new Map(keep.map((orig, vis) => [orig, vis]));
     events = (hz.events || [])
       .filter((e) => indexMap.has(e.index))
@@ -1159,47 +1381,34 @@ function paintCumul() {
     spanGaps: false,
     pointStyle: "line",
   };
+  const barCommon = {
+    type: "bar",
+    borderWidth: 0,
+    borderRadius: 3,
+    borderSkipped: false,
+    maxBarThickness: 18,
+    categoryPercentage: 0.72,
+    barPercentage: 0.88,
+    skipNull: true,
+  };
   const datasets = [
     {
-      label: "Доходы факт",
-      data: incomeFact,
-      borderColor: sage,
-      backgroundColor: hexFade(sage, 0.28),
-      borderWidth: 1.2,
-      order: 4,
-      ...flowLine,
+      label: "CFCF факт",
+      data: fact,
+      borderColor: gold,
+      backgroundColor: "transparent",
+      fill: false,
+      tension: 0.25,
+      borderWidth: 2.6,
+      pointRadius: 0,
+      pointHoverRadius: 4,
+      pointHoverBorderWidth: 1.5,
+      pointStyle: "line",
+      spanGaps: false,
+      order: 1,
     },
     {
-      label: "Доходы план",
-      data: incomePlan,
-      borderColor: sage,
-      backgroundColor: hexFade(sage, 0.08),
-      borderDash: [4, 3],
-      borderWidth: 1.1,
-      order: 5,
-      ...flowLine,
-    },
-    {
-      label: "Расходы факт",
-      data: expenseFact,
-      borderColor: rose,
-      backgroundColor: hexFade(rose, 0.28),
-      borderWidth: 1.2,
-      order: 4,
-      ...flowLine,
-    },
-    {
-      label: "Расходы план",
-      data: expensePlan,
-      borderColor: rose,
-      backgroundColor: hexFade(rose, 0.08),
-      borderDash: [4, 3],
-      borderWidth: 1.1,
-      order: 5,
-      ...flowLine,
-    },
-    {
-      label: "FCF план",
+      label: "CFCF план",
       data: plan,
       borderColor: muted,
       backgroundColor: "transparent",
@@ -1215,19 +1424,60 @@ function paintCumul() {
       order: 2,
     },
     {
+      ...barCommon,
       label: "FCF факт",
-      data: fact,
-      borderColor: gold,
-      backgroundColor: "transparent",
-      fill: false,
-      tension: 0.25,
-      borderWidth: 2.6,
-      pointRadius: 0,
-      pointHoverRadius: 4,
-      pointHoverBorderWidth: 1.5,
-      pointStyle: "line",
-      spanGaps: false,
-      order: 1,
+      data: fcfFact,
+      backgroundColor: hexFade(sky, 0.58),
+      hoverBackgroundColor: hexFade(sky, 0.78),
+      order: 3,
+    },
+    {
+      ...barCommon,
+      label: "FCF план",
+      data: fcfPlan,
+      backgroundColor: hexFade(sky, 0.18),
+      hoverBackgroundColor: hexFade(sky, 0.32),
+      borderColor: sky,
+      borderWidth: 1,
+      order: 4,
+    },
+    {
+      label: "Доходы факт",
+      data: incomeFact,
+      borderColor: sage,
+      backgroundColor: hexFade(sage, 0.16),
+      borderWidth: 1,
+      order: 5,
+      ...flowLine,
+    },
+    {
+      label: "Доходы план",
+      data: incomePlan,
+      borderColor: sage,
+      backgroundColor: hexFade(sage, 0.05),
+      borderDash: [4, 3],
+      borderWidth: 1,
+      order: 6,
+      ...flowLine,
+    },
+    {
+      label: "Расходы факт",
+      data: expenseFact,
+      borderColor: rose,
+      backgroundColor: hexFade(rose, 0.16),
+      borderWidth: 1,
+      order: 5,
+      ...flowLine,
+    },
+    {
+      label: "Расходы план",
+      data: expensePlan,
+      borderColor: rose,
+      backgroundColor: hexFade(rose, 0.05),
+      borderDash: [4, 3],
+      borderWidth: 1,
+      order: 6,
+      ...flowLine,
     },
     {
       label: "Ключевое событие",
@@ -1274,13 +1524,17 @@ function paintCumul() {
         tooltip: {
           enabled: false,
           external: (ctx) => renderFcfHover(ctx, {
-            labels, plan, fact, incomePlan, incomeFact, expensePlan, expenseFact, events,
+            labels, plan, fact, fcfPlan, fcfFact, incomePlan, incomeFact, expensePlan, expenseFact, events,
           }),
         },
         nowLine: nowIdx >= 0 ? { index: nowIdx, label: nowLabel } : { index: -1 },
       },
       scales: {
         ...scaleOpts(),
+        x: {
+          ...scaleOpts().x,
+          offset: true,
+        },
         y: {
           ...scaleOpts().y,
           title: { display: true, text: "млн ₽", color: muted },
@@ -2023,35 +2277,145 @@ function paintShare() {
   if (propTable) propTable.innerHTML = "";
 }
 
-function renderLedger(ledger) {
-  const rows = [...ledger.income, ...ledger.expense];
-  const months = MONTHS;
-  const head = ["Статья", ...months.map((m) => m.slice(0, 3))].map((h) => `<th>${h}</th>`).join("");
-  const body = rows.map((r) => {
-    const cells = r.fact.map((v, i) =>
-      `<td class="num"><input data-cat="${r.category}" data-month="${i + 1}" value="${Math.round(v)}"></td>`
-    ).join("");
-    return `<tr><td>${r.category}</td>${cells}</tr>`;
-  }).join("");
-  $("ledger-wrap").innerHTML = `<table class="ledger"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
-  $("ledger-wrap").querySelectorAll("input").forEach((inp) => {
-    inp.addEventListener("change", async () => {
-      const value = Number(String(inp.value).replace(/\s/g, "").replace(",", "."));
-      await api("/api/ledger", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          year: 2026,
-          month: Number(inp.dataset.month),
-          category: inp.dataset.cat,
-          field: "fact",
-          value,
-        }),
-      });
-      state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-      await refreshDerived();
+function ledgerRowData(ledger) {
+  const src = ledger || state.ledger;
+  if (!src) return [];
+  return [...(src.income || []), ...(src.expense || [])].map((r) => {
+    const row = {
+      category: r.category,
+      kind: r.kind,
+      sources: Array.isArray(r.source) ? r.source.slice() : [],
+    };
+    (r.fact || []).forEach((v, i) => {
+      row["m" + (i + 1)] = v;
     });
+    return row;
   });
+}
+
+function monthField(i) {
+  return "m" + (i + 1);
+}
+
+function ledgerMonthCol(i) {
+  return {
+    field: monthField(i),
+    headerName: MONTHS[i].slice(0, 3),
+    headerTooltip: MONTHS[i],
+    minWidth: 86,
+    flex: 1,
+    editable: true,
+    type: "numericColumn",
+    valueFormatter: (p) => (p.value == null || p.value === "" ? "" : Math.round(Number(p.value)).toLocaleString("ru-RU")),
+    valueParser: (p) => parseMoneyInput(p.newValue, Number(p.oldValue) || 0),
+    cellClass: "num",
+    cellClassRules: {
+      "cell-forecast": (p) => (p.data && p.data.sources && p.data.sources[i]) === "forecast",
+      "cell-partial": (p) => (p.data && p.data.sources && p.data.sources[i]) === "partial",
+      "cell-manual": (p) => (p.data && p.data.sources && p.data.sources[i]) === "manual",
+    },
+  };
+}
+
+async function onLedgerCellChanged(e) {
+  if (ledgerGridQuiet || !e.data) return;
+  if (e.oldValue === e.newValue) return;
+  if (Number(e.oldValue) === Number(e.newValue)) return;
+  const field = e.colDef.field || "";
+  if (!/^m\d+$/.test(field)) return;
+  const month = Number(field.slice(1));
+  const value = parseMoneyInput(e.newValue, Number(e.oldValue) || 0);
+  const revert = () => {
+    ledgerGridQuiet = true;
+    e.data[field] = e.oldValue;
+    e.api.refreshCells({ rowNodes: [e.node], columns: [e.column], force: true });
+    ledgerGridQuiet = false;
+  };
+  try {
+    await api("/api/ledger", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        year: (state.ledger && state.ledger.year) || 2026,
+        month,
+        category: e.data.category,
+        field: "fact",
+        value,
+      }),
+    });
+    if (e.data.sources) e.data.sources[month - 1] = "manual";
+    const pack = [...(state.ledger.income || []), ...(state.ledger.expense || [])]
+      .find((r) => r.category === e.data.category);
+    if (pack && Array.isArray(pack.fact)) pack.fact[month - 1] = value;
+    e.api.refreshCells({ rowNodes: [e.node], columns: [e.column], force: true });
+    state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
+    await refreshDerived();
+  } catch (err) {
+    revert();
+    $("upload-status").textContent = "Не записалось: " + (err.message || err);
+  }
+}
+
+function ensureLedgerGrid() {
+  const el = $("ledger-wrap");
+  if (!el) return null;
+  syncAgTheme();
+  if (!agGridAvailable()) {
+    el.innerHTML = "<p class='hint'>Не загрузился AG Grid. Проверьте сеть и обновите страницу.</p>";
+    return null;
+  }
+  if (ledgerGridApi) return ledgerGridApi;
+  ledgerGridApi = agGrid.createGrid(el, {
+    rowData: [],
+    getRowId: (p) => p.data.category,
+    rowHeight: 36,
+    headerHeight: 36,
+    singleClickEdit: true,
+    stopEditingWhenCellsLoseFocus: true,
+    enterNavigatesVertically: true,
+    enterNavigatesVerticallyAfterEdit: true,
+    animateRows: false,
+    enableBrowserTooltips: true,
+    popupParent: document.body,
+    overlayNoRowsTemplate: "<span class='ag-overlay-msg'>Нет строк факта.</span>",
+    defaultColDef: {
+      sortable: true,
+      resizable: true,
+      filter: false,
+      suppressHeaderMenuButton: true,
+      suppressMenu: true,
+    },
+    getRowClass: (p) => {
+      if (!p.data) return [];
+      return p.data.kind === "income" ? ["ledger-in"] : ["ledger-out"];
+    },
+    onCellValueChanged: onLedgerCellChanged,
+    onGridSizeChanged: (p) => p.api.sizeColumnsToFit(),
+    onFirstDataRendered: (p) => p.api.sizeColumnsToFit(),
+    columnDefs: [
+      {
+        field: "category",
+        headerName: "Статья",
+        pinned: "left",
+        lockPinned: true,
+        minWidth: 168,
+        width: 200,
+        editable: false,
+        cellClass: (p) => (p.data && p.data.kind === "income" ? "ledger-cat-in" : "ledger-cat-out"),
+      },
+      ...MONTHS.map((_, i) => ledgerMonthCol(i)),
+    ],
+  });
+  return ledgerGridApi;
+}
+
+function renderLedger(ledger) {
+  const api = ensureLedgerGrid();
+  if (!api) return;
+  ledgerGridQuiet = true;
+  api.setGridOption("rowData", ledgerRowData(ledger));
+  ledgerGridQuiet = false;
+  requestAnimationFrame(() => api.sizeColumnsToFit());
 }
 
 window.sashaBudgetReload = async function () {

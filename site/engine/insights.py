@@ -66,6 +66,8 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
     series_income_fact = []
     series_expense_plan = []
     series_expense_fact = []
+    series_fcf_plan = []
+    series_fcf_fact = []
     events = []
 
     excel_plan = read_plan_horizon()
@@ -124,14 +126,21 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
         else:
             series_fact.append(None)
 
-        series_income_plan.append(round(income_plan_by_ym.get((year, month), 0) / 1e6, 2))
-        series_expense_plan.append(round(-expense_plan_by_ym.get((year, month), 0) / 1e6, 2))
+        inc_plan = income_plan_by_ym.get((year, month), 0)
+        exp_plan = expense_plan_by_ym.get((year, month), 0)
+        series_income_plan.append(round(inc_plan / 1e6, 2))
+        series_expense_plan.append(round(-exp_plan / 1e6, 2))
+        series_fcf_plan.append(round((inc_plan - exp_plan) / 1e6, 2))
         if year == BASE_YEAR and month <= closed:
-            series_income_fact.append(round(income_fact_by_ym.get((year, month), 0) / 1e6, 2))
-            series_expense_fact.append(round(-expense_fact_by_ym.get((year, month), 0) / 1e6, 2))
+            inc_fact = income_fact_by_ym.get((year, month), 0)
+            exp_fact = expense_fact_by_ym.get((year, month), 0)
+            series_income_fact.append(round(inc_fact / 1e6, 2))
+            series_expense_fact.append(round(-exp_fact / 1e6, 2))
+            series_fcf_fact.append(round((inc_fact - exp_fact) / 1e6, 2))
         else:
             series_income_fact.append(None)
             series_expense_fact.append(None)
+            series_fcf_fact.append(None)
 
         th = thailand_plan_by_ym.get((year, month), 0)
         if th >= 1_000_000:
@@ -183,6 +192,8 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
         "series_income_fact": series_income_fact,
         "series_expense_plan": series_expense_plan,
         "series_expense_fact": series_expense_fact,
+        "series_fcf_plan": series_fcf_plan,
+        "series_fcf_fact": series_fcf_fact,
         "series_forecast": [],
         "events": uniq,
         "start_year": BASE_YEAR,
