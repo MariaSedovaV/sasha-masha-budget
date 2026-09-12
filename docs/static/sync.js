@@ -31,6 +31,7 @@
       favorites: {},
       pinned: { id: null, at: 0 },
       calendar: [],
+      calendarRepeat: {},
       cookingPlan: { rationId: null, title: "", items: [], at: 0 },
       rev: 0,
     };
@@ -121,6 +122,7 @@
       rationPatches: mergeMaps(left.rationPatches, right.rationPatches),
       schedules: mergeMaps(left.schedules, right.schedules),
       calendar: mergeItems(left.calendar, right.calendar),
+      calendarRepeat: mergeMaps(left.calendarRepeat, right.calendarRepeat),
       cookingPlan: mergeCookingPlan(left.cookingPlan, right.cookingPlan),
       rev: Math.max(Number(left.rev || 0), Number(right.rev || 0)),
     };
@@ -152,6 +154,7 @@
       favorites,
       pinned: { id: pinRaw ? Number(pinRaw) : null, at: pinRaw ? 1 : 0 },
       calendar: [],
+      calendarRepeat: {},
       cookingPlan: { rationId: null, title: "", items: [], at: 0 },
       rev: 0,
     };
@@ -300,6 +303,7 @@
       favorites: state?.favorites || {},
       pinned: state?.pinned || {},
       calendar: state?.calendar || [],
+      calendarRepeat: state?.calendarRepeat || {},
       cookingPlan: state?.cookingPlan || {},
     });
   }
@@ -450,6 +454,41 @@
           item.deleted = true;
           item.updatedAt = Date.now();
         }
+      });
+    },
+    upsertCalendarRepeat(rule) {
+      return applyPatch((s) => {
+        const id = String(rule?.id || "");
+        if (!id) return;
+        const prev = s.calendarRepeat?.[id] || {};
+        s.calendarRepeat = {
+          ...(s.calendarRepeat || {}),
+          [id]: {
+            ...prev,
+            ...rule,
+            id,
+            deleted: !!rule.deleted,
+            updatedAt: Date.now(),
+            at: rule.at || prev.at || Date.now(),
+          },
+        };
+      });
+    },
+    deleteCalendarRepeat(id) {
+      return applyPatch((s) => {
+        const key = String(id || "");
+        if (!key) return;
+        const prev = s.calendarRepeat?.[key] || {};
+        s.calendarRepeat = {
+          ...(s.calendarRepeat || {}),
+          [key]: {
+            ...prev,
+            id: key,
+            deleted: true,
+            updatedAt: Date.now(),
+            at: prev.at || Date.now(),
+          },
+        };
       });
     },
     setCookingPlan(plan) {
