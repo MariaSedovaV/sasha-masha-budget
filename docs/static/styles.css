@@ -509,8 +509,8 @@ body.chart-fs .assist-panel { visibility: hidden; pointer-events: none; }
   gap: 6px;
 }
 .chart-hover-event .trophy-icon {
-  width: 11px;
-  height: 11px;
+  width: 9px;
+  height: 9px;
   margin-top: 1px;
   flex: none;
   color: var(--gold);

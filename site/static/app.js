@@ -97,7 +97,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "47";
+const SNAPSHOT_VER = "48";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -1372,7 +1372,7 @@ function trophyIcon(color) {
   c.height = s;
   const g = c.getContext("2d");
   g.translate(48, 48);
-  g.scale(0.72, 0.72);
+  g.scale(0.58, 0.58);
   g.translate(-48, -46);
   const cx = 48;
   const cy = 46;
@@ -1786,9 +1786,9 @@ function paintCumul() {
       showLine: false,
       pointRadius: (ctx) => {
         if (eventData[ctx.dataIndex] == null) return 0;
-        return eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 7 : 6;
+        return eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 5 : 6;
       },
-      pointHoverRadius: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 9 : 8),
+      pointHoverRadius: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 6.5 : 8),
       pointHitRadius: 10,
       pointBorderWidth: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 0 : 1),
       pointStyle: (ctx) => {
