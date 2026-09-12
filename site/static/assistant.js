@@ -291,7 +291,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
   }
 
 
-  const BRAIN_V = "1";
+  const BRAIN_V = "2";
   function brainSrc() {
     const host = location.hostname;
     const path = location.pathname;
@@ -317,12 +317,10 @@ html.assist-open,html.assist-open body{overflow:hidden}
     try {
       const brain = await loadBrain();
       if (brain?.hasKey()) return await brain.ask(text);
-    } catch {
-      const fallback = handleCommand(text);
-      if (/Не расслышала/.test(fallback.say || "")) {
-        return { say: "Умный режим не ответил. Нажмите «ключ» и проверьте ключ Google AI — или скажите короткой командой." };
-      }
-      return fallback;
+    } catch (err) {
+      const say = window.SashaButler?.explainError?.(err)
+        || "Умный режим не ответил. Попробуйте ещё раз или скажите короткой командой.";
+      return { say };
     }
     return handleCommand(text);
   }
