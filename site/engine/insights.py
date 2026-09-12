@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
+from copy import deepcopy
+
 from .categories import (
     BASKET_CATEGORIES,
     BASKET_LIMIT,
@@ -15,7 +18,7 @@ from .categories import (
     SAVINGS_GOAL,
     START_CAPITAL,
 )
-from .excel_fcf import read_fact_cumul_series, read_plan_horizon
+from .excel_fcf import read_cell_comments, read_fact_cumul_series, read_plan_horizon
 
 # Горизонт кумулятива FCF: факт 2026, план до конца 2040
 FCF_END_YEAR = 2040
@@ -56,8 +59,52 @@ def last_complete_month(rows, meta_closed: int | None = None) -> int:
     return max(months) if months else 7
 
 
-def _build_fcf_horizon(rows, closed: int) -> dict:
-    """Факт 2026 (до closed); план 2026–2040 из Excel КУМУЛЯТИВНЫЙ ИТОГ."""
+def _has_year_data(rows_y, cat: str) -> bool:
+    for r in rows_y:
+        if r["category"] != cat:
+            continue
+        if abs(r.get("plan") or 0) > 0.5:
+            return True
+        if r.get("source") in ("forecast",):
+            continue
+        if abs(r.get("fact") or 0) > 0.5:
+            return True
+    return False
+
+
+def _prune_filters(rows_y) -> tuple[dict, list]:
+    live = {
+        cat
+        for cat in INCOME_CATEGORIES + EXPENSE_CATEGORIES
+        if _has_year_data(rows_y, cat)
+    }
+    groups = {key: [c for c in cats if c in live] for key, cats in FILTER_GROUPS.items()}
+    tree = []
+    for node in deepcopy(FILTER_TREE):
+        cats = [c for c in (node.get("categories") or []) if c in live]
+        children = []
+        for child in node.get("children") or []:
+            cc = [c for c in (child.get("categories") or []) if c in live]
+            if cc:
+                children.append({**child, "categories": cc})
+        if node["id"] in ("income", "expense"):
+            tree.append({**node, "categories": cats, "children": children})
+            continue
+        if cats or children:
+            tree.append({**node, "categories": cats, "children": children})
+    return groups, tree
+
+
+def _month_end(year: int, month: int) -> str:
+    return f"{year:04d}-{month:02d}-{monthrange(year, month)[1]:02d}"
+
+
+def _cal_fields(year: int, month: int) -> dict:
+    return {"calendar": True, "date": _month_end(year, month), "year": year, "month": month}
+
+
+def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_events=None) -> dict:
+    """Факт 2026 до последнего живого месяца; план 2026–2040 из Excel КУМУЛЯТИВНЫЙ ИТОГ."""
     n_months = (FCF_END_YEAR - BASE_YEAR + 1) * 12
     labels = []
     series_plan = []
@@ -72,6 +119,7 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
 
     excel_plan = read_plan_horizon()
     excel_fact = read_fact_cumul_series()
+    until = max(int(fact_until or closed), int(closed or 0))
 
     income_plan_by_ym = {}
     income_fact_by_ym = {}
@@ -79,6 +127,8 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
     expense_fact_by_ym = {}
     thailand_plan_by_ym = {}
     large_plan_by_ym = {}
+    mortgage_plan_by_ym = {}
+    parking_plan_by_ym = {}
     for r in rows:
         if r.get("year", BASE_YEAR) < BASE_YEAR or r.get("year", BASE_YEAR) > FCF_END_YEAR:
             continue
@@ -91,6 +141,10 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
             expense_fact_by_ym[key] = expense_fact_by_ym.get(key, 0) + r["fact"]
         if r["category"] == "Квартира Тайланд":
             thailand_plan_by_ym[key] = thailand_plan_by_ym.get(key, 0) + r["plan"]
+        if r["category"] == "Ипотека платеж":
+            mortgage_plan_by_ym[key] = mortgage_plan_by_ym.get(key, 0) + r["plan"]
+        if r["category"] == "Парковка":
+            parking_plan_by_ym[key] = parking_plan_by_ym.get(key, 0) + r["plan"]
         if r["category"] in ("Парковка", "Крупные покупки", "Отпуска"):
             large_plan_by_ym[key] = large_plan_by_ym.get(key, 0) + r["plan"]
 
@@ -115,14 +169,10 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
             cumul_plan += plan_net
             series_plan.append(round(cumul_plan / 1e6, 2))
 
-        if year == BASE_YEAR and month <= closed:
-            if excel_fact and month - 1 < len(excel_fact["cumul"]) and excel_fact["cumul"][month - 1]:
-                series_fact.append(round(excel_fact["cumul"][month - 1] / 1e6, 2))
-                cumul_fact = excel_fact["cumul"][month - 1]
-            else:
-                fact_net = _month_net(rows, month, "fact", core_income=True)
-                cumul_fact += fact_net
-                series_fact.append(round(cumul_fact / 1e6, 2))
+        if year == BASE_YEAR and month <= until:
+            fact_net = _month_net(rows, month, "fact", core_income=True)
+            cumul_fact += fact_net
+            series_fact.append(round(cumul_fact / 1e6, 2))
         else:
             series_fact.append(None)
 
@@ -131,7 +181,7 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
         series_income_plan.append(round(inc_plan / 1e6, 2))
         series_expense_plan.append(round(-exp_plan / 1e6, 2))
         series_fcf_plan.append(round((inc_plan - exp_plan) / 1e6, 2))
-        if year == BASE_YEAR and month <= closed:
+        if year == BASE_YEAR and month <= until:
             inc_fact = income_fact_by_ym.get((year, month), 0)
             exp_fact = expense_fact_by_ym.get((year, month), 0)
             series_income_fact.append(round(inc_fact / 1e6, 2))
@@ -144,13 +194,18 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
 
         th = thailand_plan_by_ym.get((year, month), 0)
         if th >= 1_000_000:
+            trophy = year == 2028
             events.append(
                 {
                     "index": i,
-                    "label": "Платёж Таиланд",
-                    "detail": f"план {th / 1e6:.2f} млн ₽",
+                    "label": "Квартира Таиланд" if trophy else "Платёж Таиланд",
+                    "detail": _mln(th) if trophy else f"план {th / 1e6:.2f} млн ₽",
                     "tone": "gold",
                     "value": series_plan[-1],
+                    "category": "Квартира Тайланд",
+                    "auto_key": f"auto:thailand:{year}:{month}",
+                    **_cal_fields(year, month),
+                    **({"icon": "trophy"} if trophy else {}),
                 }
             )
         if year == BASE_YEAR and month == closed:
@@ -161,10 +216,38 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
                     "detail": f"факт {series_fact[-1]:.2f} млн ₽" if series_fact[-1] is not None else "",
                     "tone": "sage",
                     "value": series_fact[-1],
+                    "category": "",
+                    "auto_key": f"auto:closed:{year}:{month}",
+                    **_cal_fields(year, month),
+                }
+            )
+        park = parking_plan_by_ym.get((year, month), 0)
+        parking_named = year == 2026 and month == 8 and park >= 500_000
+        if parking_named:
+            events.append(
+                {
+                    "index": i,
+                    "label": "Выкуп парковки Куинджи",
+                    "detail": _tys(park),
+                    "tone": "gold",
+                    "value": series_plan[-1],
+                    "category": "Парковка",
+                    "auto_key": f"auto:parking:{year}:{month}",
+                    **_cal_fields(year, month),
                 }
             )
         large = large_plan_by_ym.get((year, month), 0)
-        if large >= 500_000 and th < 1_000_000:
+        if large >= 500_000 and th < 1_000_000 and not parking_named:
+            large_cat = "Крупные покупки"
+            large_amt = 0.0
+            for cat in ("Парковка", "Крупные покупки", "Отпуска"):
+                amt = sum(
+                    r["plan"] for r in rows
+                    if r.get("year", BASE_YEAR) == year and r["month"] == month and r["category"] == cat
+                )
+                if amt > large_amt:
+                    large_amt = amt
+                    large_cat = cat
             events.append(
                 {
                     "index": i,
@@ -172,13 +255,32 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
                     "detail": f"{large / 1e3:.0f} тыс. план",
                     "tone": "rose",
                     "value": series_plan[-1],
+                    "category": large_cat,
+                    "auto_key": f"auto:large:{year}:{month}:{large_cat}",
+                    **_cal_fields(year, month),
                 }
             )
+        if year == 2030 and month == 3:
+            mort = mortgage_plan_by_ym.get((year, month), 0)
+            if mort > 0.5:
+                events.append(
+                    {
+                        "index": i,
+                        "label": "Погашение ипотеки",
+                        "detail": _mln(mort),
+                        "tone": "gold",
+                        "icon": "trophy",
+                        "value": series_plan[-1],
+                        "category": "Ипотека платеж",
+                        "auto_key": f"auto:mortgage:{year}:{month}",
+                        **_cal_fields(year, month),
+                    }
+                )
 
     seen = set()
     uniq = []
     for e in events:
-        key = (e["index"], e["label"])
+        key = (e["index"], e["label"], e.get("auto_key") or "")
         if key in seen:
             continue
         seen.add(key)
@@ -195,19 +297,141 @@ def _build_fcf_horizon(rows, closed: int) -> dict:
         "series_fcf_plan": series_fcf_plan,
         "series_fcf_fact": series_fcf_fact,
         "series_forecast": [],
-        "events": uniq,
+        "events": merge_stored_events(uniq, stored_events or [], series_plan, series_fact),
         "start_year": BASE_YEAR,
         "end_year": FCF_END_YEAR,
         "source": "excel_cumul" if excel_plan else "ledger",
     }
 
 
-def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None = None) -> dict:
+def merge_stored_events(auto_events, stored, series_plan, series_fact) -> list[dict]:
+    suppressed = {e.get("auto_key") for e in stored if e.get("suppressed") and e.get("auto_key")}
+    overrides = {
+        e.get("auto_key"): e
+        for e in stored
+        if e.get("auto_key") and not e.get("suppressed")
+    }
+    out = []
+    used_keys = set()
+    for e in auto_events:
+        key = e.get("auto_key") or ""
+        if key and key in suppressed:
+            continue
+        if key and key in overrides:
+            ov = overrides[key]
+            e = {
+                **e,
+                "label": ov.get("title") or e["label"],
+                "category": ov.get("category") if ov.get("category") is not None else e.get("category"),
+            }
+        out.append(e)
+        if key:
+            used_keys.add(key)
+    for s in stored:
+        if s.get("suppressed"):
+            continue
+        key = s.get("auto_key") or ""
+        if key and key in used_keys:
+            continue
+        year = int(s.get("year") or BASE_YEAR)
+        month = int(s.get("month") or 0)
+        if month < 1 or month > 12:
+            continue
+        index = (year - BASE_YEAR) * 12 + (month - 1)
+        if index < 0:
+            continue
+        val = None
+        if index < len(series_fact) and series_fact[index] is not None:
+            val = series_fact[index]
+        elif index < len(series_plan):
+            val = series_plan[index]
+        out.append({
+            "index": index,
+            "label": s.get("title") or "Событие",
+            "detail": s.get("category") or "",
+            "tone": "gold",
+            "value": val,
+            "category": s.get("category") or "",
+            "auto_key": key,
+            "source": s.get("source") or "manual",
+            **_cal_fields(year, month),
+        })
+        if key:
+            used_keys.add(key)
+    seen = set()
+    uniq = []
+    for e in out:
+        k = (e.get("index"), e.get("label"), e.get("category") or "", e.get("auto_key") or "")
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(e)
+    return uniq
+
+
+def pack_display_events(horizon_events, stored) -> list[dict]:
+    by_key = {}
+    out = []
+    for s in stored:
+        row = {
+            "year": int(s.get("year") or BASE_YEAR),
+            "month": int(s.get("month") or 0),
+            "category": s.get("category") or "",
+            "title": s.get("title") or "",
+            "source": s.get("source") or "manual",
+            "auto_key": s.get("auto_key") or "",
+            "suppressed": 1 if s.get("suppressed") else 0,
+        }
+        out.append(row)
+        if row["auto_key"]:
+            by_key[row["auto_key"]] = row
+    for e in horizon_events:
+        key = e.get("auto_key") or ""
+        if key and key in by_key:
+            continue
+        year = int(e.get("year") or (BASE_YEAR + int(e.get("index") or 0) // 12))
+        month = int(e.get("month") or (int(e.get("index") or 0) % 12 + 1))
+        dup = next(
+            (
+                row for row in out
+                if not row.get("suppressed")
+                and row["year"] == year
+                and row["month"] == month
+                and row["category"] == (e.get("category") or "")
+                and row["title"] == e.get("label")
+            ),
+            None,
+        )
+        if dup:
+            continue
+        row = {
+            "year": year,
+            "month": month,
+            "category": e.get("category") or "",
+            "title": e.get("label") or "",
+            "source": e.get("source") or ("auto" if key else "manual"),
+            "auto_key": key,
+            "suppressed": 0,
+        }
+        out.append(row)
+        if key:
+            by_key[key] = row
+    return out
+
+
+def build_insights(
+    rows: list[dict],
+    year: int = 2026,
+    closed_month: int | None = None,
+    fact_until: int | None = None,
+    stored_events: list[dict] | None = None,
+) -> dict:
     closed = last_complete_month(rows, closed_month)
+    until = max(int(fact_until or closed), closed)
     ytd = list(range(1, closed + 1))
     rows_y = [r for r in rows if r.get("year", year) == year]
 
-    horizon = _build_fcf_horizon(rows, closed)
+    horizon = _build_fcf_horizon(rows, closed, until, stored_events)
 
     series_plan_y = horizon["series_plan"][:12]
     series_fact_y = horizon["series_fact"][:12]
@@ -491,22 +715,32 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
         r["n"] = f"{i+1:02d}"
 
 
+    comments = read_cell_comments()
     monthly = []
     for cat in INCOME_CATEGORIES + EXPENSE_CATEGORIES:
         plan = [_sum(rows_y, [m], [cat], "plan") for m in range(1, 13)]
         fact = [_sum(rows_y, [m], [cat], "fact") for m in range(1, 13)]
-        monthly.append(
-            {
-                "category": cat,
-                "kind": "income" if cat in INCOME_CATEGORIES else "expense",
-                "plan": plan,
-                "fact": fact,
-            }
-        )
+        notes = comments.get(cat) or {}
+        item = {
+            "category": cat,
+            "kind": "income" if cat in INCOME_CATEGORIES else "expense",
+            "plan": plan,
+            "fact": fact,
+        }
+        fact_notes = notes.get("fact") or [None] * 12
+        plan_notes = notes.get("plan") or [None] * 12
+        if any(fact_notes):
+            item["comment_fact"] = fact_notes
+        if any(plan_notes):
+            item["comment_plan"] = plan_notes
+        monthly.append(item)
+
+    filter_groups, filter_tree = _prune_filters(rows_y)
 
     return {
         "year": year,
         "closed_month": closed,
+        "fact_until": until,
         "cumul_fact": fact_closed,
         "cumul_plan": plan_closed,
         "delta": delta,
@@ -526,13 +760,26 @@ def build_insights(rows: list[dict], year: int = 2026, closed_month: int | None 
         "series_plan": series_plan_y,
         "series_fact": series_fact_y,
         "fcf_horizon": horizon,
+        "calendar_events": [
+            {
+                "id": f"fcf-{e['index']}-{e['label']}",
+                "date": e["date"],
+                "title": e["label"],
+                "detail": e.get("detail") or "",
+                "icon": e.get("icon") or "star",
+                "tone": e.get("tone") or "gold",
+            }
+            for e in (horizon.get("events") or [])
+            if e.get("calendar") and e.get("date")
+        ],
+        "key_events": pack_display_events(horizon.get("events") or [], stored_events or []),
         "basket_months": basket_months,
         "categories": cat_rows,
         "monthly": monthly,
         "conclusions": conclusions,
         "recommendations": recs,
-        "filter_groups": FILTER_GROUPS,
-        "filter_tree": FILTER_TREE,
+        "filter_groups": filter_groups,
+        "filter_tree": filter_tree,
     }
 
 

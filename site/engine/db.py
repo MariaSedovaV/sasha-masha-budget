@@ -60,6 +60,17 @@ CREATE TABLE IF NOT EXISTS merchant_map (
     needle TEXT PRIMARY KEY,
     category TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS key_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    auto_key TEXT NOT NULL DEFAULT '',
+    suppressed INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -150,4 +161,53 @@ def upsert_ledger(
         conn.execute(
             "INSERT INTO ledger(year, month, category, kind, plan, fact, source) VALUES(?,?,?,?,?,?,?)",
             (year, month, category, kind, plan or 0, fact or 0, source),
+        )
+
+
+def list_key_events(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS key_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            auto_key TEXT NOT NULL DEFAULT '',
+            suppressed INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    rows = conn.execute(
+        "SELECT * FROM key_events ORDER BY year, month, category, id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def replace_key_events(conn: sqlite3.Connection, events: list[dict[str, Any]]) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS key_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            auto_key TEXT NOT NULL DEFAULT '',
+            suppressed INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    conn.execute("DELETE FROM key_events")
+    for item in events:
+        conn.execute(
+            """INSERT INTO key_events(year, month, category, title, source, auto_key, suppressed)
+               VALUES(?,?,?,?,?,?,?)""",
+            (
+                int(item.get("year") or 2026),
+                int(item.get("month") or 0),
+                item.get("category") or "",
+                item.get("title") or "",
+                item.get("source") or "manual",
+                item.get("auto_key") or "",
+                1 if item.get("suppressed") else 0,
+            ),
         )

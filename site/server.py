@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -20,22 +21,84 @@ from engine.categories import (
     MONTHS_RU,
 )
 from engine.categorize import categorize
-from engine.db import get_meta, init_db, ledger_rows, pack_ledger, set_meta, upsert_ledger
+from engine.db import (
+    get_meta,
+    init_db,
+    ledger_rows,
+    list_key_events,
+    pack_ledger,
+    replace_key_events,
+    set_meta,
+    upsert_ledger,
+)
 from engine.insights import build_insights
 from engine.markets import fetch_markets
 from engine.pdf_parse import parse_statement_pdf
-from engine.seed_excel import seed_from_excel
+from engine.seed_excel import seed_from_excel, find_excel
 from engine.share import build_share
+from engine.excel_fcf import clear_excel_cache
+from engine.excel_sync import ExcelStructureError, now_stamp, save_workbook, validate_excel
 
 STATIC = Path(__file__).resolve().parent / "static"
 app = FastAPI(title="Sasha & Masha | Мониторинг бюджета")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:8766",
+        "http://localhost:8766",
+        "https://mariasedovav.github.io",
+    ],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+
+
+def _coverage(conn) -> tuple[int, int]:
+    closed = int(get_meta(conn, "closed_month", "7") or 7)
+    until = int(get_meta(conn, "fact_until", str(closed)) or closed)
+    return closed, max(until, closed)
+
+
+def _seed_if_needed(conn) -> None:
+    excel = find_excel()
+    if not excel:
+        return
+    mtime = str(int(excel.stat().st_mtime))
+    if get_meta(conn, "seeded") != "1" or get_meta(conn, "excel_mtime") != mtime:
+        try:
+            seed_from_excel(conn, excel)
+        except ExcelStructureError as exc:
+            set_meta(conn, "structure_ok", "0")
+            set_meta(conn, "structure_error", str(exc))
+            conn.commit()
+
+
+def _health_payload(conn) -> dict:
+    closed, until = _coverage(conn)
+    return {
+        "ok": True,
+        "excel": get_meta(conn, "excel_file"),
+        "closed_month": closed,
+        "fact_until": until,
+        "updated_at": get_meta(conn, "updated_at"),
+        "structure_ok": get_meta(conn, "structure_ok", "1") != "0",
+        "structure_error": get_meta(conn, "structure_error") or "",
+    }
+
+
+def _analytics_payload(conn, year: int = 2026) -> dict:
+    rows = ledger_rows(conn, None)
+    closed, until = _coverage(conn)
+    stored = list_key_events(conn)
+    data = build_insights(rows, year, closed, until, stored)
+    data["updated_at"] = get_meta(conn, "updated_at")
+    return data
 
 
 @app.on_event("startup")
 def startup() -> None:
     conn = init_db()
-    if get_meta(conn, "seeded") != "1":
-        seed_from_excel(conn)
+    _seed_if_needed(conn)
     conn.close()
 
 
@@ -57,6 +120,28 @@ class MerchantPatch(BaseModel):
     category: str
 
 
+class EventRow(BaseModel):
+    year: int = 2026
+    month: int
+    category: str = ""
+    title: str = ""
+    source: str = "manual"
+    auto_key: str = ""
+    suppressed: int = 0
+
+
+class FactCell(BaseModel):
+    category: str
+    month: int
+    value: float
+
+
+class LedgerCommit(BaseModel):
+    year: int = 2026
+    cells: List[FactCell] = []
+    events: List[EventRow] = []
+
+
 class ApplyBody(BaseModel):
     year: int
     month: int
@@ -71,18 +156,21 @@ def _learned(conn):
 @app.get("/api/health")
 def health():
     conn = init_db()
-    excel = get_meta(conn, "excel_file")
-    closed = get_meta(conn, "closed_month", "7")
+    _seed_if_needed(conn)
+    payload = _health_payload(conn)
     conn.close()
-    return {"ok": True, "excel": excel, "closed_month": int(closed)}
+    return payload
 
 
 @app.get("/api/ledger")
 def api_ledger(year: int = 2026):
     conn = init_db()
+    _seed_if_needed(conn)
     rows = ledger_rows(conn, year)
-    closed = int(get_meta(conn, "closed_month", "7") or 7)
+    closed, _until = _coverage(conn)
     data = pack_ledger(rows, closed)
+    data["key_events"] = list_key_events(conn)
+    data["updated_at"] = get_meta(conn, "updated_at")
     conn.close()
     return data
 
@@ -105,27 +193,72 @@ def api_patch_ledger(body: CellPatch):
     )
     # Расширяем «закрытый месяц», если правим факт позже текущего
     if body.field == "fact":
-        closed = int(get_meta(conn, "closed_month", "7") or 7)
+        closed, until = _coverage(conn)
+        if body.month > until:
+            set_meta(conn, "fact_until", str(body.month))
+            until = body.month
         if body.month > closed:
             set_meta(conn, "closed_month", str(body.month))
             closed = body.month
     else:
-        closed = int(get_meta(conn, "closed_month", "7") or 7)
+        closed, until = _coverage(conn)
     conn.commit()
     conn.close()
-    return {"ok": True, "closed_month": closed}
+    return {"ok": True, "closed_month": closed, "fact_until": until}
+
+
+@app.post("/api/ledger/commit")
+def api_commit_ledger(body: LedgerCommit):
+    excel = find_excel()
+    if not excel:
+        raise HTTPException(404, "Не найден файл бюджета Excel в папке проекта")
+    try:
+        validate_excel(excel)
+    except ExcelStructureError as exc:
+        raise HTTPException(409, f"Структура Excel не совпала: {exc}") from exc
+
+    cells = [
+        {"category": c.category, "month": c.month, "value": c.value}
+        for c in (body.cells or [])
+    ]
+    events = [e.model_dump() if hasattr(e, "model_dump") else e.dict() for e in (body.events or [])]
+    try:
+        save_workbook(excel, cells=cells or None, events=events)
+    except PermissionError as exc:
+        raise HTTPException(409, "Не удалось записать Excel — закройте файл в Numbers/Excel и повторите.") from exc
+    except ExcelStructureError as exc:
+        raise HTTPException(409, f"Структура Excel не совпала: {exc}") from exc
+    except OSError as exc:
+        raise HTTPException(409, f"Не удалось записать Excel: {exc}") from exc
+
+    clear_excel_cache()
+    conn = init_db()
+    try:
+        seed_from_excel(conn, excel)
+        replace_key_events(conn, events)
+        set_meta(conn, "updated_at", now_stamp())
+        set_meta(conn, "structure_ok", "1")
+        set_meta(conn, "structure_error", "")
+        conn.commit()
+        from export_snapshot import main as export_snapshot
+        export_snapshot(also_docs=True)
+        payload = _health_payload(conn)
+        payload["written"] = len(cells)
+        payload["events"] = len(events)
+        return payload
+    except ExcelStructureError as exc:
+        conn.rollback()
+        raise HTTPException(409, f"Структура Excel не совпала после записи: {exc}") from exc
+    finally:
+        conn.close()
 
 
 @app.get("/api/analytics")
 def api_analytics(year: int = 2026):
     conn = init_db()
-    # План 2026–2040 нужен для событий/горизонта; факт — year
-    rows = ledger_rows(conn, None)
-    closed = int(get_meta(conn, "closed_month", "7") or 7)
-    data = build_insights(rows, year, closed)
+    _seed_if_needed(conn)
+    data = _analytics_payload(conn, year)
     conn.close()
-    data["filter_groups"] = FILTER_GROUPS
-    data["filter_tree"] = FILTER_TREE
     return data
 
 
@@ -133,7 +266,7 @@ def api_analytics(year: int = 2026):
 def api_share(year: int = 2026):
     conn = init_db()
     rows = ledger_rows(conn, year)
-    closed = int(get_meta(conn, "closed_month", "7") or 7)
+    closed, _until = _coverage(conn)
     data = build_share(rows, closed)
     conn.close()
     return data
@@ -375,7 +508,9 @@ def api_apply(import_id: int, body: ApplyBody):
         upsert_ledger(conn, body.year, body.month, cat, kind, fact=fact_value, source="import")
 
     conn.execute("UPDATE imports SET status='applied' WHERE id=?", (import_id,))
-    closed = int(get_meta(conn, "closed_month", "7") or 7)
+    closed, until = _coverage(conn)
+    if body.month > until:
+        set_meta(conn, "fact_until", str(body.month))
     if body.month > closed:
         set_meta(conn, "closed_month", str(body.month))
     conn.commit()

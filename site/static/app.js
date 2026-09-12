@@ -8,13 +8,13 @@ const DETAIL_PALETTE = [
 
 const FALLBACK_TREE = [
   { id: "basket", label: "Корзина", tone: "gold", categories: [], children: [] },
-  { id: "expense", label: "Все расходы", tone: "sage", categories: [], children: [] },
-  { id: "income", label: "Доходы", tone: "sky", categories: [], children: [] },
+  { id: "expense", label: "Расходы", tone: "rose", categories: [], children: [] },
+  { id: "income", label: "Доходы", tone: "sage", categories: [], children: [] },
 ];
 
 const FCF_YEAR_MIN = 2026;
 const FCF_YEAR_MAX = 2040;
-const FCF_RANGE_DEFAULT = [2026, 2028];
+const FCF_RANGE_DEFAULT = [2026, 2030];
 const ASSET_YEAR_MIN = 2024;
 const ASSET_YEAR_MAX = 2040;
 const ASSET_RANGE_DEFAULT = [2024, 2028];
@@ -29,6 +29,7 @@ let state = {
   analytics: null,
   filterGroups: [],
   selectedCats: [],
+  includeBasket: true,
   sliceDetail: false,
   fcfFrom: FCF_RANGE_DEFAULT[0],
   fcfTo: FCF_RANGE_DEFAULT[1],
@@ -42,6 +43,9 @@ let state = {
   assetTimelineBound: false,
   chartExpandBound: false,
   expandedPanel: null,
+  keyEvents: [],
+  ledgerDirty: {},
+  eventsDirty: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -92,11 +96,46 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "32";
+const SNAPSHOT_VER = "44";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
 let ledgerGridQuiet = false;
+
+function setStatus(msg) {
+  const el = $("ledger-status");
+  if (el) el.textContent = msg || "";
+}
+
+function formatStamp(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (!m) return String(iso);
+    return `Обновлено ${Number(m[3])} ${MONTHS_SHORT[Number(m[2]) - 1]} ${m[1]}, ${m[4]}:${m[5]}`;
+  }
+  const day = d.getDate();
+  const mon = MONTHS_SHORT[d.getMonth()];
+  const year = d.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `Обновлено ${day} ${mon} ${year}, ${hh}:${mm}`;
+}
+
+function paintStamp(health) {
+  const el = $("data-stamp");
+  if (!el) return;
+  const iso = health && (health.updated_at || health.updatedAt);
+  el.textContent = iso ? formatStamp(iso) : "Обновлено — нет данных";
+  if (health && health.structure_ok === false && health.structure_error) {
+    el.title = "Структура Excel: " + health.structure_error;
+    el.classList.add("warn");
+  } else {
+    el.classList.remove("warn");
+    el.title = health && health.excel ? `Источник: ${health.excel}` : "Время последнего обновления";
+  }
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -140,7 +179,7 @@ async function api(path, opts) {
   const urls = [];
   if (isLocalApi()) urls.push(path);
   if (!opts || !opts.method || opts.method === "GET") {
-    urls.push("static/snapshot/" + name + ".json?v=" + SNAPSHOT_VER);
+    urls.push("static/snapshot/" + name + ".json?v=" + SNAPSHOT_VER + "&d=" + new Date().toISOString().slice(0, 10));
   }
   let last = new Error("Нет данных: " + path);
   for (const url of urls) {
@@ -188,31 +227,25 @@ async function boot() {
   $("theme-toggle").addEventListener("click", () => {
     applyTheme(currentTheme() === "light" ? "dark" : "light");
   });
-  const sel = $("import-month");
-  sel.innerHTML = MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join("");
-  sel.addEventListener("change", () => {
-    state.month = Number(sel.value);
-    renderPropose();
-    renderTx();
-  });
+  bindLedgerSave();
+  bindEventPop();
 
   let health = { closed_month: 7, excel: null };
   try {
     health = await api("/api/health");
-    $("upload-status").textContent = health.excel
-      ? `История из ${health.excel}. Закрытый месяц: ${MONTHS[health.closed_month - 1]}.`
-      : "";
+    paintStamp(health);
+    setStatus(health.excel ? `Источник: ${health.excel}` : "");
   } catch (err) {
-    $("upload-status").textContent = "Сервер недоступен, показан сохранённый снимок.";
+    paintStamp(null);
+    setStatus("Сервер недоступен, показан сохранённый снимок.");
   }
   state.month = Math.min(12, (health.closed_month || 7) + 1);
-  sel.value = String(state.month);
 
   try {
     const ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     state.ledger = ledger;
     state.categories = ledger.categories || [];
-    $("rule-cat").innerHTML = state.categories.map((c) => `<option>${c}</option>`).join("");
+    hydrateEvents(ledger, state.analytics);
   } catch (err) {
     state.ledger = { income: [], expense: [], categories: [] };
     state.categories = [];
@@ -221,30 +254,32 @@ async function boot() {
   try {
     await Promise.all([loadAnalytics(), loadMarkets()]);
   } catch (err) {
-    $("upload-status").textContent = "Не удалось загрузить аналитику: " + (err.message || err);
+    setStatus("Не удалось загрузить аналитику: " + (err.message || err));
   }
   if (isLocalApi()) setInterval(loadMarkets, 60 * 60 * 1000);
 }
 
 const drop = $("drop");
 const file = $("file");
-drop.addEventListener("click", () => file.click());
-drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
-drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
-drop.addEventListener("drop", (e) => {
-  e.preventDefault();
-  drop.classList.remove("drag");
-  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
-});
-file.addEventListener("change", () => { if (file.files[0]) upload(file.files[0]); });
-
-$("tx-search").addEventListener("input", renderTx);
-$("btn-apply").addEventListener("click", applyMonth);
-$("rule-form").addEventListener("submit", saveRule);
+if (drop && file) {
+  drop.addEventListener("click", () => file.click());
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("drag");
+    if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+  });
+  file.addEventListener("change", () => { if (file.files[0]) upload(file.files[0]); });
+}
+if ($("tx-search")) $("tx-search").addEventListener("input", renderTx);
+if ($("btn-apply")) $("btn-apply").addEventListener("click", applyMonth);
+if ($("rule-form")) $("rule-form").addEventListener("submit", saveRule);
 
 $("btn-reset-filters").addEventListener("click", () => {
   state.filterGroups = [];
   state.selectedCats = [];
+  state.includeBasket = true;
   state.sliceDetail = false;
   const detailBtn = $("btn-slice-detail");
   if (detailBtn) {
@@ -580,7 +615,7 @@ function bindChartExpands() {
 }
 
 async function upload(f) {
-  $("upload-status").textContent = "Читаю справку…";
+  setStatus "Читаю справку…";
   const fd = new FormData();
   fd.append("file", f);
   try {
@@ -588,7 +623,7 @@ async function upload(f) {
     state.importId = out.import_id;
     const detail = await api(`/api/imports/${out.import_id}`);
     state.txs = detail.transactions;
-    $("upload-status").textContent =
+    setStatus
       `Разобрано ${out.count} операций (${out.header.period_from || "?"} — ${out.header.period_to || "?"}). Проверьте категории и запишите месяц.`;
     const monthsPresent = [...new Set(state.txs.map((t) => t.month))].sort((a, b) => a - b);
     if (monthsPresent.includes(8)) state.month = 8;
@@ -599,7 +634,7 @@ async function upload(f) {
     loadImports();
     loadMerchants();
   } catch (err) {
-    $("upload-status").textContent = "Не получилось прочитать файл: " + err.message;
+    setStatus "Не получилось прочитать файл: " + err.message;
   }
 }
 
@@ -665,7 +700,7 @@ async function onTxCellChanged(e) {
       renderPropose();
     } catch (err) {
       revert();
-      $("upload-status").textContent = "Не записалось: " + (err.message || err);
+      setStatus "Не записалось: " + (err.message || err);
     }
     return;
   }
@@ -687,7 +722,7 @@ async function onTxCellChanged(e) {
       loadMerchants();
     } catch (err) {
       revert();
-      $("upload-status").textContent = "Не записалось: " + (err.message || err);
+      setStatus "Не записалось: " + (err.message || err);
     }
   }
 }
@@ -818,12 +853,12 @@ async function applyMonth() {
       body: JSON.stringify({ year: 2026, month: state.month }),
     });
     state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-    $("upload-status").textContent = `${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`;
+    setStatus `${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`;
     renderPropose();
     renderLedger(state.ledger);
     await refreshDerived();
   } catch (err) {
-    $("upload-status").textContent = "Не записалось: " + err.message;
+    setStatus "Не записалось: " + err.message;
   } finally {
     $("btn-apply").disabled = false;
   }
@@ -831,20 +866,13 @@ async function applyMonth() {
 
 async function loadDataTab() {
   if (!state.ledger) state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-  renderLedger(state.ledger);
-  await Promise.all([loadImports(), loadMerchants()]);
-  if (!state.importId) {
-    try {
-      const imports = await api("/api/imports");
-      if (imports[0]) await openImport(imports[0].id);
-    } catch {
-      renderTx();
-    }
-  } else {
-    renderTx();
-    renderPropose();
+  if (!state.analytics) {
+    try { state.analytics = await api("/api/analytics"); } catch {}
   }
-  if (!txGridApi) renderTx();
+  hydrateEvents(state.ledger, state.analytics);
+  renderLedger(state.ledger);
+  renderEventsStrip();
+  syncLedgerSaveBtn();
   requestAnimationFrame(() => resizeDataGrids());
 }
 
@@ -1001,6 +1029,8 @@ async function loadAnalytics() {
   ]);
   state.analytics = an;
   state.ledger = applyVoiceAddsToLedger(ledger);
+  hydrateEvents(ledger, an);
+  if (an.updated_at) paintStamp({ updated_at: an.updated_at, excel: (state.health && state.health.excel) });
 
   const dlt = an.delta;
   const closedShort = MONTHS_SHORT[an.closed_month - 1] || "";
@@ -1037,27 +1067,90 @@ function filterTree() {
   }));
 }
 
+function dashboardNow() {
+  const d = new Date();
+  return { year: d.getFullYear(), month: d.getMonth() + 1 };
+}
+
+function nowLineForLabels(labels, fallbackYear) {
+  const now = dashboardNow();
+  const short = MONTHS_SHORT[now.month - 1] || "сейчас";
+  const label = `${short} ${String(now.year).slice(2)}`;
+  let index = -1;
+  (labels || []).forEach((lab, i) => {
+    const s = String(lab);
+    if (s.includes(".")) {
+      const parts = s.split(".");
+      if (Number(parts[0]) === now.month && Number(parts[1]) === now.year) index = i;
+    }
+  });
+  if (index < 0 && fallbackYear === now.year && now.month >= 1 && now.month <= (labels || []).length) {
+    index = now.month - 1;
+  }
+  return { index, label };
+}
+
+function factMonthCount(an) {
+  const until = Number(an && an.fact_until);
+  if (until > 0) return until;
+  return Number(an && an.closed_month) || 0;
+}
+
+function catHasYearData(c) {
+  const row = ((state.analytics && state.analytics.monthly) || []).find((r) => r.category === c);
+  if (!row) return false;
+  if ((row.plan || []).some((v) => Math.abs(Number(v) || 0) > 0.5)) return true;
+  return catHasFact(c);
+}
+
+function catHasFact(c) {
+  const row = ((state.analytics && state.analytics.monthly) || []).find((r) => r.category === c);
+  if (!row) return false;
+  const until = factMonthCount(state.analytics);
+  return (row.fact || []).some((v, i) => i < until && Math.abs(Number(v) || 0) > 0.5);
+}
+
+function sliceFocus() {
+  const g = new Set((state.filterGroups || []).filter((id) => id === "income" || id === "expense"));
+  const inc = g.has("income");
+  const exp = g.has("expense");
+  if (inc && !exp) return "income";
+  if (exp && !inc) return "expense";
+  return "all";
+}
+
+function treeNode(id) {
+  return filterTree().find((n) => n.id === id) || null;
+}
+
+function treeChild(parentId, childId) {
+  const node = treeNode(parentId);
+  const fromParent = ((node && node.children) || []).find((c) => c.id === childId);
+  return fromParent || treeNode(childId);
+}
+
+function nodeCats(node) {
+  return (node && Array.isArray(node.categories)) ? node.categories : [];
+}
+
+function l1Nodes() {
+  const income = treeNode("income");
+  const expense = treeNode("expense");
+  const nodes = [];
+  if (income) nodes.push({ ...income, label: income.label || "Доходы" });
+  if (expense) nodes.push({ ...expense, label: "Расходы" });
+  return nodes;
+}
+
 function selectedGroupNodes() {
-  const tree = filterTree();
-  const ids = new Set(state.filterGroups || []);
-  return tree.filter((n) => ids.has(n.id));
-}
-
-function groupCats() {
-  if (!(state.filterGroups || []).length) return [];
-  const set = new Set();
-  selectedGroupNodes().forEach((n) => (n.categories || []).forEach((c) => set.add(c)));
-  return [...set];
-}
-
-function activeCats() {
-  if (!(state.filterGroups || []).length) return [];
-  return state.selectedCats.length ? state.selectedCats : groupCats();
+  const focus = sliceFocus();
+  if (focus === "all") return [];
+  const node = treeNode(focus);
+  return node ? [node] : [];
 }
 
 function incomeCats() {
-  const tree = filterTree();
-  const node = tree.find((n) => n.id === "income");
+  const node = treeNode("income");
   if (node && Array.isArray(node.categories) && node.categories.length) return node.categories;
   const fg = state.analytics && state.analytics.filter_groups && state.analytics.filter_groups.income;
   if (Array.isArray(fg) && fg.length) return fg;
@@ -1067,10 +1160,44 @@ function incomeCats() {
 function expenseCats() {
   const fg = state.analytics && state.analytics.filter_groups && state.analytics.filter_groups.expense;
   if (Array.isArray(fg) && fg.length) return fg;
-  const tree = filterTree();
-  const node = tree.find((n) => n.id === "expense");
+  const node = treeNode("expense");
   if (node && Array.isArray(node.categories) && node.categories.length) return node.categories;
   return [];
+}
+
+function basketCats() {
+  const cats = nodeCats(treeChild("expense", "basket"));
+  if (cats.length) return cats;
+  const fg = state.analytics && state.analytics.filter_groups && state.analytics.filter_groups.basket;
+  return Array.isArray(fg) ? fg : [];
+}
+
+function largeCats() {
+  const cats = nodeCats(treeChild("expense", "large"));
+  if (cats.length) return cats;
+  const basket = new Set(basketCats());
+  return expenseCats().filter((c) => !basket.has(c));
+}
+
+function visibleExpenseCats() {
+  if (state.includeBasket) {
+    const all = expenseCats();
+    return all.length ? all : [...largeCats(), ...basketCats()];
+  }
+  return largeCats();
+}
+
+function groupCats() {
+  const focus = sliceFocus();
+  if (focus === "income") return incomeCats().filter(catHasYearData);
+  if (focus === "expense") return visibleExpenseCats().filter(catHasYearData);
+  return [];
+}
+
+function activeCats() {
+  if (sliceFocus() === "all") return [];
+  const selected = state.selectedCats.filter(catHasYearData);
+  return selected.length ? selected : groupCats();
 }
 
 function fcfMonthTitle(lab) {
@@ -1105,9 +1232,20 @@ const fcfCrosshairPlugin = {
       const val = ds && ds.data ? ds.data[a.index] : null;
       return ds && !ds.isEvent && val != null && !Number.isNaN(Number(val));
     });
-    const factPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "CFCF факт");
-    const planPt = candidates.find((a) => (chart.data.datasets[a.datasetIndex].label || "") === "CFCF план");
-    const main = factPt || planPt || candidates[0] || active.find((a) => a.element) || active[0];
+    const factPt = candidates.find((a) => {
+      const lab = chart.data.datasets[a.datasetIndex].label || "";
+      return lab === "CFCF факт" || lab === "FCF факт";
+    });
+    const flowPt = candidates.find((a) => {
+      const lab = chart.data.datasets[a.datasetIndex].label || "";
+      return lab === "Доходы факт" || lab === "Расходы факт";
+    });
+    const planPt = candidates.find((a) => {
+      const lab = chart.data.datasets[a.datasetIndex].label || "";
+      return lab === "CFCF план" || lab === "FCF план" || lab === "Итог план"
+        || lab === "План доходов" || lab === "План расходов";
+    });
+    const main = factPt || flowPt || planPt || candidates[0] || active.find((a) => a.element) || active[0];
     if (!main || !main.element) return;
     const x = main.element.x;
     const y = main.element.y;
@@ -1211,6 +1349,96 @@ const nowLinePlugin = {
   },
 };
 
+const TROPHY_SVG =
+  '<svg class="trophy-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 3h8v2h3.2A2.8 2.8 0 0 1 22 7.8c0 2.4-1.6 4.4-3.8 5.1A6.1 6.1 0 0 1 13 16.9V18h3v2H8v-2h3v-1.1A6.1 6.1 0 0 1 5.8 12.9C3.6 12.2 2 10.2 2 7.8A2.8 2.8 0 0 1 4.8 5H8V3Zm0 4.1H5.1c-.6 0-1.1.5-1.1 1.1 0 1.5 1 2.8 2.4 3.2l.6.1V7.1Zm10.9 0H16v4.4l.6-.1c1.4-.4 2.4-1.7 2.4-3.2 0-.6-.5-1.1-1.1-1.1ZM9.5 5.5v6.1A4.5 4.5 0 0 0 12 13a4.5 4.5 0 0 0 2.5-1.4V5.5h-5Z"/></svg>';
+const trophyIconCache = new Map();
+
+function trophyIcon(color) {
+  const key = color || "#d4b483";
+  if (trophyIconCache.has(key)) return trophyIconCache.get(key);
+  const s = 96;
+  const c = document.createElement("canvas");
+  c.width = s;
+  c.height = s;
+  const g = c.getContext("2d");
+  g.translate(48, 48);
+  g.scale(0.72, 0.72);
+  g.translate(-48, -46);
+  const cx = 48;
+  const cy = 46;
+  g.fillStyle = key;
+  g.strokeStyle = key;
+  g.lineCap = "round";
+  g.lineJoin = "round";
+  g.beginPath();
+  g.moveTo(cx - 17, cy - 22);
+  g.lineTo(cx + 17, cy - 22);
+  g.quadraticCurveTo(cx + 19, cy - 1, cx, cy + 12);
+  g.quadraticCurveTo(cx - 19, cy - 1, cx - 17, cy - 22);
+  g.closePath();
+  g.fill();
+  g.beginPath();
+  g.roundRect ? g.roundRect(cx - 18, cy - 26, 36, 7, 2) : g.rect(cx - 18, cy - 26, 36, 7);
+  g.fill();
+  g.lineWidth = 5;
+  g.beginPath();
+  g.arc(cx - 18, cy - 10, 11, Math.PI * 0.2, Math.PI * 1.25, false);
+  g.stroke();
+  g.beginPath();
+  g.arc(cx + 18, cy - 10, 11, -Math.PI * 0.25, Math.PI * 0.8, false);
+  g.stroke();
+  g.fillRect(cx - 3.2, cy + 10, 6.4, 11);
+  g.beginPath();
+  g.moveTo(cx - 13, cy + 22);
+  g.lineTo(cx + 13, cy + 22);
+  g.lineTo(cx + 16, cy + 30);
+  g.lineTo(cx - 16, cy + 30);
+  g.closePath();
+  g.fill();
+  trophyIconCache.set(key, c);
+  return c;
+}
+
+function eventAtIndex(events, index) {
+  const list = (events || []).filter((e) => e.visIndex === index);
+  return list.find((e) => e.icon === "trophy") || list[0];
+}
+
+function wrapTooltipText(text, width = 44) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  const words = clean.split(" ");
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (next.length > width) {
+      if (cur) lines.push(cur);
+      cur = w;
+    } else {
+      cur = next;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function sliceCellComments(row, monthIndex) {
+  if (!row) return [];
+  const factNote = (row.comment_fact || [])[monthIndex];
+  const planNote = (row.comment_plan || [])[monthIndex];
+  const lines = [];
+  if (factNote) lines.push(...wrapTooltipText(factNote));
+  if (planNote && planNote !== factNote) {
+    const planLines = wrapTooltipText(planNote);
+    if (planLines.length) {
+      if (factNote) planLines[0] = "План: " + planLines[0];
+      lines.push(...planLines);
+    }
+  }
+  return lines;
+}
+
 function renderFcfHover(context, meta) {
   const el = $("fcf-hover");
   if (!el) return;
@@ -1270,9 +1498,12 @@ function renderFcfHover(context, meta) {
     const sign = d >= 0 ? "+" : "−";
     deltaHtml += `<div class="chart-hover-delta ${cls}">${sign}${mlnShort(Math.abs(d))} к плану FCF</div>`;
   }
-  const eventsHtml = evs.map((e) =>
-    `<div class="chart-hover-event tone-${e.tone || "gold"}">${e.label}${e.detail ? " · " + e.detail : ""}</div>`
-  ).join("");
+  const eventsHtml = evs.map((e) => {
+    const trophy = e.icon === "trophy" ? TROPHY_SVG : "";
+    const cls = `chart-hover-event tone-${e.tone || "gold"}${e.icon === "trophy" ? " is-trophy" : ""}`;
+    const text = `${e.label}${e.detail ? " · " + e.detail : ""}`;
+    return `<div class="${cls}">${trophy}${escapeHtml(text)}</div>`;
+  }).join("");
   if (!rows.length && !eventsHtml) {
     el.hidden = true;
     return;
@@ -1365,8 +1596,9 @@ function paintCumul() {
   }
 
   const eventData = labels.map((_, i) => {
-    const ev = events.find((e) => e.visIndex === i);
+    const ev = eventAtIndex(events, i);
     if (!ev) return null;
+    if (ev.value != null && Number.isFinite(Number(ev.value))) return Number(ev.value);
     if (fact[i] != null) return fact[i];
     if (plan[i] != null) return plan[i];
     return 0;
@@ -1485,9 +1717,17 @@ function paintCumul() {
       borderColor: gold,
       backgroundColor: gold,
       showLine: false,
-      pointRadius: (ctx) => (eventData[ctx.dataIndex] == null ? 0 : 6),
-      pointHoverRadius: 8,
-      pointStyle: "rectRot",
+      pointRadius: (ctx) => {
+        if (eventData[ctx.dataIndex] == null) return 0;
+        return eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 7 : 6;
+      },
+      pointHoverRadius: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 9 : 8),
+      pointHitRadius: 10,
+      pointBorderWidth: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 0 : 1),
+      pointStyle: (ctx) => {
+        const ev = eventAtIndex(events, ctx.dataIndex);
+        return ev && ev.icon === "trophy" ? trophyIcon(gold) : "rectRot";
+      },
       order: 0,
       isEvent: true,
     },
@@ -1496,12 +1736,9 @@ function paintCumul() {
     ? datasets
     : datasets.filter((ds) => !String(ds.label).startsWith("Доходы") && !String(ds.label).startsWith("Расходы"));
 
-  const closed = Number(an.closed_month) || 8;
-  const nowIdx = labels.findIndex((lab) => {
-    const parts = String(lab).split(".");
-    return Number(parts[0]) === closed && Number(parts[1]) === 2026;
-  });
-  const nowLabel = closed >= 1 && closed <= 12 ? `${MONTHS[closed - 1].slice(0, 3).toLowerCase()} ${String(2026).slice(2)}` : "сейчас";
+  const nowMark = nowLineForLabels(labels, Number(an.year) || 2026);
+  const nowIdx = nowMark.index;
+  const nowLabel = nowMark.label;
 
   const grid = currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)";
 
@@ -1559,23 +1796,51 @@ function hexFade(hex, alpha) {
 }
 
 function renderFilters() {
-  const tree = filterTree();
   const limit = state.analytics ? Math.round(state.analytics.basket_limit / 1000) : 230;
-  const selected = new Set(state.filterGroups || []);
-  $("filters").innerHTML = tree.map((g) => {
-    const label = g.id === "basket" ? `Корзина ${limit}` : g.label;
+  const selected = new Set((state.filterGroups || []).filter((id) => id === "income" || id === "expense"));
+  const basketOn = !!state.includeBasket;
+  $("filters").innerHTML = l1Nodes().map((g) => {
     const on = selected.has(g.id);
-    return `<button class="chip l1-${g.id} ${on ? "active" : ""}" data-g="${g.id}" aria-pressed="${on}">${label}</button>`;
+    if (g.id === "expense") {
+      return `<div class="chip-wrap l1-expense ${on ? "active" : ""} ${basketOn ? "basket-on" : ""}">
+        <button type="button" class="basket-orb" role="switch" aria-checked="${basketOn}"
+          title="Корзина ${limit} тыс. — повседневные расходы внутри фильтра «Расходы»"
+          aria-label="Корзина ${limit} тыс.">
+          <span class="basket-orb-label">${limit}</span>
+          <span class="basket-orb-check" aria-hidden="true">✓</span>
+        </button>
+        <button type="button" class="chip l1-expense ${on ? "active" : ""}" data-g="expense" aria-pressed="${on}">Расходы</button>
+      </div>`;
+    }
+    return `<button type="button" class="chip l1-${g.id} ${on ? "active" : ""}" data-g="${g.id}" aria-pressed="${on}">${g.label}</button>`;
   }).join("");
-  $("filters").querySelectorAll(".chip").forEach((btn) => {
+
+  const orb = $("filters").querySelector(".basket-orb");
+  if (orb) {
+    orb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.includeBasket = !state.includeBasket;
+      if (sliceFocus() === "expense") {
+        const allowed = new Set(groupCats());
+        state.selectedCats = state.selectedCats.filter((c) => allowed.has(c));
+      }
+      renderFilters();
+      paintSlice();
+    });
+  }
+
+  $("filters").querySelectorAll(".chip[data-g]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const id = btn.dataset.g;
-      const cur = new Set(state.filterGroups || []);
+      const cur = new Set((state.filterGroups || []).filter((x) => x === "income" || x === "expense"));
       if (cur.has(id)) cur.delete(id);
       else cur.add(id);
       state.filterGroups = [...cur];
-      const allowed = new Set(groupCats());
-      state.selectedCats = state.selectedCats.filter((c) => allowed.has(c));
+      if (sliceFocus() === "all") state.selectedCats = [];
+      else {
+        const allowed = new Set(groupCats());
+        state.selectedCats = state.selectedCats.filter((c) => allowed.has(c));
+      }
       renderFilters();
       paintSlice();
     });
@@ -1586,8 +1851,9 @@ function renderFilters() {
 function renderFilterNest() {
   const nest = $("filter-nest");
   if (!nest) return;
+  const focus = sliceFocus();
   const nodes = selectedGroupNodes();
-  if (!nodes.length) {
+  if (focus === "all" || !nodes.length) {
     nest.classList.add("hidden");
     nest.innerHTML = "";
     nest.removeAttribute("data-tone");
@@ -1597,32 +1863,40 @@ function renderFilterNest() {
   nest.classList.remove("hidden");
   const tone = nodes[0].tone || "gold";
   nest.dataset.tone = tone;
+  const limit = state.analytics ? Math.round(state.analytics.basket_limit / 1000) : 230;
 
   const blocks = [];
   const seenBlock = new Set();
-  const selectedIds = new Set(state.filterGroups || []);
   nodes.forEach((node) => {
-    const children = node.children || [];
+    const children = (node.children || [])
+      .filter((child) => !(focus === "expense" && child.id === "basket" && !state.includeBasket))
+      .map((child) => ({
+        ...child,
+        label: child.id === "basket" ? `Корзина ${limit}` : child.label,
+        categories: (child.categories || []).filter(catHasYearData),
+      }))
+      .filter((child) => child.categories.length);
     if (children.length) {
       children.forEach((child) => {
-        // Не дублировать «Корзину», если она уже выбрана как корневой фильтр
-        if (selectedIds.has(child.id) && child.id !== node.id) return;
         if (seenBlock.has(child.id)) return;
         seenBlock.add(child.id);
         blocks.push({
           id: child.id,
           label: child.label,
-          categories: child.categories || [],
+          categories: child.categories,
           parentId: node.id,
         });
       });
     } else {
       if (seenBlock.has(node.id)) return;
       seenBlock.add(node.id);
+      const raw = focus === "expense" ? visibleExpenseCats() : (node.categories || []);
+      const cats = raw.filter(catHasYearData);
+      if (!cats.length) return;
       blocks.push({
         id: node.id,
         label: node.label,
-        categories: node.categories || [],
+        categories: cats,
         parentId: node.id,
       });
     }
@@ -1668,235 +1942,291 @@ function deviationTooltipParts(fact, plan) {
   };
 }
 
+function formatSliceNetTooltip(v) {
+  if (v == null || Number.isNaN(Number(v))) return "";
+  const n = Number(v);
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  return `${sign}${Math.round(Math.abs(n)).toLocaleString("ru-RU")} тыс.`;
+}
+
+function sliceResultLabel(overview) {
+  return overview ? "FCF" : "Итог";
+}
+
+function fcfOverlayDatasets(netF, netP, prefix) {
+  const gold = factColor();
+  const hole = cssVar("--bg") || "#0b0c10";
+  const mark = {
+    type: "line",
+    tension: 0.25,
+    pointRadius: 3.2,
+    pointHoverRadius: 5,
+    pointStyle: "circle",
+    spanGaps: false,
+    fill: false,
+  };
+  return [
+    {
+      ...mark,
+      label: `${prefix} факт`,
+      data: netF,
+      borderColor: gold,
+      backgroundColor: gold,
+      borderWidth: 2.4,
+      pointBackgroundColor: gold,
+      pointBorderColor: gold,
+      pointBorderWidth: 0,
+      order: 0,
+      stack: "fcf-fact",
+    },
+    {
+      ...mark,
+      label: `${prefix} план`,
+      data: netP,
+      borderColor: gold,
+      backgroundColor: "transparent",
+      borderDash: [5, 4],
+      borderWidth: 1.7,
+      pointBackgroundColor: hole,
+      pointBorderColor: gold,
+      pointBorderWidth: 1.7,
+      order: 1,
+      stack: "fcf-plan",
+    },
+  ];
+}
+
 function paintSlice() {
   const an = state.analytics;
   if (!an) return;
   themeCharts();
   const byCat = Object.fromEntries((an.monthly || []).map((r) => [r.category, r]));
-  const closed = an.closed_month;
-  const gold = factColor();
-  const sky = cssVar("--sky") || "#8aa4c7";
+  const factUntil = factMonthCount(an);
   const sage = cssVar("--sage") || "#8fbea8";
+  const rose = cssVar("--rose") || "#d9897a";
   const muted = cssVar("--muted");
   const indices = Array.from({ length: 12 }, (_, i) => i);
   const labels = MONTHS.map((m) => m.slice(0, 3));
-  const overview = !(state.filterGroups || []).length;
+  const focus = sliceFocus();
+  const overview = focus === "all";
+  const incAll = incomeCats();
+  const incSet = new Set(incAll);
+  const nowMark = nowLineForLabels(labels, Number(an.year) || 2026);
+  const slicePlugins = [fcfZeroLinePlugin, fcfCrosshairPlugin, nowLinePlugin];
 
-  if (overview) {
-    const inc = incomeCats();
-    const exp = expenseCats();
-    const sumFact = (cats, i) =>
-      i < closed ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000 : null;
-    const sumPlan = (cats, i) =>
-      cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000;
+  const sumFact = (cats, i) =>
+    i < factUntil ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000 : null;
+  const sumPlan = (cats, i) =>
+    cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000;
 
-    if (state.sliceDetail) {
-      const datasets = [];
-      inc.forEach((c, idx) => {
-        datasets.push({
-          label: c,
-          cat: c,
-          kind: "income",
-          data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
-          backgroundColor: DETAIL_PALETTE[idx % DETAIL_PALETTE.length],
-          borderRadius: idx === inc.length - 1 ? 4 : 0,
-          stack: "income",
-          order: 1,
-        });
-      });
-      exp.forEach((c, idx) => {
-        const color = DETAIL_PALETTE[(idx + 4) % DETAIL_PALETTE.length];
-        datasets.push({
-          label: c,
-          cat: c,
-          kind: "expense",
-          data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
-          backgroundColor: color,
-          borderRadius: idx === exp.length - 1 ? 4 : 0,
-          stack: "expense",
-          order: 1,
-        });
-      });
-      paintChart("chart-slice", {
-        type: "bar",
-        data: { labels, datasets },
-        options: {
-          maintainAspectRatio: false,
-          interaction: chartInteraction(),
-          plugins: {
-            legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
-            tooltip: {
-              enabled: true,
-              filter: (item) => item.raw != null,
-              callbacks: {
-                label: (ctx) => {
-                  const cat = ctx.dataset.cat;
-                  const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
-                  const bits = deviationTooltipParts(ctx.raw, plan);
-                  return `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)} · ${bits.text}`;
-                },
-                labelTextColor: (ctx) => {
-                  const cat = ctx.dataset.cat;
-                  const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
-                  return deviationTooltipParts(ctx.raw, plan).color;
-                },
-              },
-            },
-          },
-          scales: {
-            ...scaleOpts(),
-            x: { ...scaleOpts().x, stacked: true },
-            y: { ...scaleOpts().y, stacked: true, title: { display: true, text: "тыс. ₽", color: muted } },
-          },
+  const flowFrom = (incList, expList) => {
+    const incF = indices.map((i) => sumFact(incList, i));
+    const expF = indices.map((i) => {
+      const v = sumFact(expList, i);
+      return v == null ? null : -Math.abs(v);
+    });
+    const incP = indices.map((i) => sumPlan(incList, i));
+    const expP = indices.map((i) => -Math.abs(sumPlan(expList, i)));
+    const netF = indices.map((i) => (incF[i] == null ? null : incF[i] + (expF[i] || 0)));
+    const netP = indices.map((i) => incP[i] + expP[i]);
+    return { incF, expF, incP, expP, netF, netP };
+  };
+
+  const resultName = sliceResultLabel(overview);
+
+  const sliceTooltip = () => ({
+    enabled: true,
+    filter: (item) => item.raw != null,
+    callbacks: {
+      label: (ctx) => {
+        const v = ctx.parsed && ctx.parsed.y;
+        if (v == null) return null;
+        const lab = ctx.dataset.label || "";
+        if (lab.startsWith("FCF") || lab.startsWith("Итог")) {
+          return `${lab}: ${formatSliceNetTooltip(v)}`;
+        }
+        return `${lab}: ${Number(v).toFixed(0)}`;
+      },
+    },
+  });
+
+  const flowChartOpts = (extra = {}) => ({
+    maintainAspectRatio: false,
+    interaction: extra.interaction || { mode: "index", intersect: false },
+    layout: { padding: { right: 8 } },
+    plugins: {
+      legend: legendOpts({ labels: { boxWidth: 10, font: { size: 10 }, filter: extra.legendFilter } }),
+      tooltip: extra.tooltip || sliceTooltip(),
+      nowLine: nowMark.index >= 0 ? { index: nowMark.index, label: nowMark.label } : { index: -1 },
+    },
+    scales: {
+      ...scaleOpts(),
+      x: { ...scaleOpts().x, stacked: !!extra.stacked, offset: true },
+      y: {
+        ...scaleOpts().y,
+        stacked: !!extra.stacked,
+        title: { display: true, text: "тыс. ₽", color: muted },
+        grid: {
+          color: (ctx) => (ctx.tick && ctx.tick.value === 0
+            ? (currentTheme() === "light" ? "rgba(28,25,21,0.22)" : "rgba(239,232,220,0.18)")
+            : (currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)")),
         },
-      });
-    } else {
-      paintChart("chart-slice", {
-        type: "bar",
-        data: {
-          labels,
-          datasets: [
-            {
-              type: "bar",
-              label: "Доходы факт",
-              data: indices.map((i) => sumFact(inc, i)),
-              backgroundColor: sky,
-              borderRadius: 4,
-              order: 2,
-            },
-            {
-              type: "bar",
-              label: "Расходы факт",
-              data: indices.map((i) => sumFact(exp, i)),
-              backgroundColor: sage,
-              borderRadius: 4,
-              order: 2,
-            },
-            {
-              type: "line",
-              label: "План доходов",
-              data: indices.map((i) => sumPlan(inc, i)),
-              borderColor: muted,
-              backgroundColor: "transparent",
-              tension: 0.25,
-              borderWidth: 2,
-              pointRadius: 2,
-              pointHoverRadius: 5,
-              order: 1,
-            },
-            {
-              type: "line",
-              label: "План расходов",
-              data: indices.map((i) => sumPlan(exp, i)),
-              borderColor: muted,
-              backgroundColor: "transparent",
-              borderDash: [5, 4],
-              tension: 0.25,
-              borderWidth: 2,
-              pointRadius: 2,
-              pointHoverRadius: 5,
-              order: 1,
-            },
-          ],
-        },
-        options: {
-          maintainAspectRatio: false,
-          interaction: chartInteraction(),
-          plugins: {
-            legend: legendOpts(),
-            tooltip: { enabled: true, filter: (item) => item.raw != null },
-          },
-          scales: {
-            ...scaleOpts(),
-            x: { ...scaleOpts().x, stacked: false },
-            y: { ...scaleOpts().y, stacked: false, title: { display: true, text: "тыс. ₽", color: muted } },
-          },
-        },
-      });
-    }
+      },
+    },
+  });
+
+  const cats = overview ? [] : activeCats();
+  const inc = overview ? incAll : (focus === "income" ? cats : []);
+  const exp = overview ? visibleExpenseCats().filter(catHasYearData) : (focus === "expense" ? cats : []);
+  const flow = flowFrom(inc, exp);
+
+  const barDs = (label, data, color) => ({
+    type: "bar",
+    label,
+    data,
+    backgroundColor: hexFade(color, 0.72),
+    hoverBackgroundColor: color,
+    borderRadius: 4,
+    grouped: false,
+    categoryPercentage: 0.58,
+    barPercentage: 0.92,
+    order: 3,
+  });
+  const planDs = (label, data, color) => ({
+    type: "line",
+    label,
+    data,
+    borderColor: color,
+    backgroundColor: "transparent",
+    borderDash: [5, 4],
+    tension: 0.25,
+    borderWidth: 1.8,
+    pointRadius: 0,
+    pointHoverRadius: 4,
+    order: 2,
+  });
+
+  const paintFlowOverview = () => {
+    const datasets = focus === "income"
+      ? [barDs("Доходы факт", flow.incF, sage), planDs("План доходов", flow.incP, sage)]
+      : focus === "expense"
+        ? [barDs("Расходы факт", flow.expF, rose), planDs("План расходов", flow.expP, rose)]
+        : [
+          barDs("Доходы факт", flow.incF, sage),
+          barDs("Расходы факт", flow.expF, rose),
+          planDs("План доходов", flow.incP, sage),
+          planDs("План расходов", flow.expP, rose),
+          ...fcfOverlayDatasets(flow.netF, flow.netP, resultName),
+        ];
+    paintChart("chart-slice", {
+      type: "bar",
+      plugins: slicePlugins,
+      data: { labels, datasets },
+      options: flowChartOpts(),
+    });
+  };
+
+  if (!state.sliceDetail) {
+    paintFlowOverview();
     return;
   }
 
-  const cats = activeCats();
-  const planTotal = indices.map((i) => cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000);
-
-  if (state.sliceDetail && cats.length) {
-    const datasets = cats.map((c, idx) => ({
+  const detailCats = (overview ? [...inc, ...exp] : cats).filter(catHasFact);
+  const datasets = [];
+  const incomePart = detailCats.filter((c) => incSet.has(c));
+  const expensePart = detailCats.filter((c) => !incSet.has(c));
+  incomePart.forEach((c, idx) => {
+    datasets.push({
       label: c,
       cat: c,
-      data: indices.map((i) => (i < closed ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
+      kind: "income",
+      data: indices.map((i) => (i < factUntil ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
       backgroundColor: DETAIL_PALETTE[idx % DETAIL_PALETTE.length],
-      borderRadius: idx === cats.length - 1 ? 4 : 0,
-      stack: "fact",
-      order: 1,
-    }));
-    paintChart("chart-slice", {
-      type: "bar",
-      data: { labels, datasets },
-      options: {
-        maintainAspectRatio: false,
-        interaction: chartInteraction(),
-        plugins: {
-          legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
-          tooltip: {
-            enabled: true,
-            filter: (item) => item.raw != null,
-            callbacks: {
-              label: (ctx) => {
-                const cat = ctx.dataset.cat;
-                const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
-                const bits = deviationTooltipParts(ctx.raw, plan);
-                return `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(1)} · ${bits.text}`;
-              },
-              labelTextColor: (ctx) => {
-                const cat = ctx.dataset.cat;
-                const plan = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
-                return deviationTooltipParts(ctx.raw, plan).color;
-              },
-              footer: (items) => {
-                const i = items[0] && items[0].dataIndex;
-                if (i == null) return "";
-                const factSum = items.reduce((s, it) => s + (it.parsed.y || 0), 0);
-                const planSum = cats.reduce((s, c) => s + ((byCat[c] && byCat[c].plan[i]) || 0), 0) / 1000;
-                return `Факт вместе: ${factSum.toFixed(1)} · план ${planSum.toFixed(1)} тыс.`;
-              },
-            },
-          },
-        },
-        scales: {
-          ...scaleOpts(),
-          x: { ...scaleOpts().x, stacked: true },
-          y: { ...scaleOpts().y, stacked: true, title: { display: true, text: "тыс. ₽", color: muted } },
-        },
-      },
+      borderRadius: idx === incomePart.length - 1 ? 4 : 0,
+      stack: "income",
+      order: 3,
     });
-  } else {
-    const fact = indices.map((i) => (i < closed
-      ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000
-      : null));
-    paintChart("chart-slice", {
-      type: "bar",
-      data: {
-        labels,
-        datasets: [
-          { label: "План, тыс.", data: planTotal, backgroundColor: planColor(), borderRadius: 4 },
-          { label: "Факт, тыс.", data: fact, backgroundColor: gold, borderRadius: 4 },
-        ],
-      },
-      options: {
-        maintainAspectRatio: false,
-        interaction: chartInteraction(),
-        plugins: {
-          legend: legendOpts(),
-          tooltip: { enabled: true },
-        },
-        scales: {
-          ...scaleOpts(),
-          y: { ...scaleOpts().y, title: { display: true, text: "тыс. ₽", color: muted } },
-        },
-      },
+  });
+  expensePart.forEach((c, idx) => {
+    datasets.push({
+      label: c,
+      cat: c,
+      kind: "expense",
+      data: indices.map((i) => {
+        if (i >= factUntil) return null;
+        const v = ((byCat[c] && byCat[c].fact[i]) || 0) / 1000;
+        return -Math.abs(v);
+      }),
+      backgroundColor: DETAIL_PALETTE[(idx + 4) % DETAIL_PALETTE.length],
+      borderRadius: idx === expensePart.length - 1 ? 4 : 0,
+      stack: "expense",
+      order: 3,
+    });
+  });
+  if (!datasets.length) {
+    paintFlowOverview();
+    return;
+  }
+  if (focus === "income") datasets.push({ ...planDs("План доходов", flow.incP, sage), pointHitRadius: 0 });
+  else if (focus === "expense") datasets.push({ ...planDs("План расходов", flow.expP, rose), pointHitRadius: 0 });
+  else {
+    fcfOverlayDatasets(flow.netF, flow.netP, resultName).forEach((ds) => {
+      datasets.push({ ...ds, pointHitRadius: 0, pointHoverRadius: 0 });
     });
   }
+  paintChart("chart-slice", {
+    type: "bar",
+    plugins: [fcfZeroLinePlugin, nowLinePlugin],
+    data: { labels, datasets },
+    options: flowChartOpts({
+      stacked: true,
+      interaction: chartInteraction(),
+      tooltip: {
+        enabled: true,
+        mode: "nearest",
+        intersect: true,
+        displayColors: false,
+        filter: (item) => {
+          const ds = item.dataset || (item.chart && item.chart.data && item.chart.data.datasets[item.datasetIndex]);
+          return !!(ds && ds.cat && item.raw != null && Math.abs(Number(item.raw)) > 0.05);
+        },
+        callbacks: {
+          title: (items) => {
+            const ctx = items && items[0];
+            if (!ctx) return "";
+            const month = MONTHS[ctx.dataIndex] || "";
+            return `${ctx.dataset.label}${month ? " · " + month : ""}`;
+          },
+          label: (ctx) => {
+            const cat = ctx.dataset.cat;
+            const factAbs = Math.abs(Number(ctx.parsed && ctx.parsed.y) || 0);
+            const planAbs = ((byCat[cat] && byCat[cat].plan[ctx.dataIndex]) || 0) / 1000;
+            const lines = [
+              `Факт: ${Math.round(factAbs).toLocaleString("ru-RU")} тыс.`,
+              `План: ${Math.round(planAbs).toLocaleString("ru-RU")} тыс.`,
+            ];
+            if (planAbs > 0.5) {
+              const pct = ((factAbs - planAbs) / planAbs) * 100;
+              if (Math.abs(pct) >= 0.5) {
+                const sign = pct > 0 ? "+" : "−";
+                lines.push(`к плану ${sign}${Math.abs(pct).toFixed(0)}%`);
+              }
+            }
+            return lines;
+          },
+          footer: (items) => {
+            const ctx = items && items[0];
+            if (!ctx || !ctx.dataset.cat) return [];
+            return sliceCellComments(byCat[ctx.dataset.cat], ctx.dataIndex);
+          },
+        },
+        footerColor: muted,
+        footerFont: { size: 10, weight: "normal", lineHeight: 1.35 },
+        footerAlign: "left",
+        footerMarginTop: 8,
+      },
+    }),
+  });
 }
 
 function bindShareControls() {
@@ -1992,10 +2322,13 @@ function paintShare() {
     const { from, to } = clampTimelineRange("asset");
     const { labels: allLabels, keep } = keepTimelineIndexes(tl, from, to);
     const labels = keep.map((i) => allLabels[i]);
-    const nowFull = Number.isFinite(tl.now_index) ? tl.now_index : -1;
+    const nowMark = nowLineForLabels(allLabels);
+    let nowFull = nowMark.index;
+    if (nowFull < 0 && Number.isFinite(tl.now_index)) nowFull = tl.now_index;
     const nowIdx = keep.indexOf(nowFull);
-    const nowMonth = Number(tl.now_month) || 8;
-    const nowLabel = `${MONTHS[nowMonth - 1].slice(0, 3).toLowerCase()} ${String(tl.now_year || 2026).slice(2)}`;
+    const nowLabel = nowMark.index >= 0
+      ? nowMark.label
+      : `${MONTHS[(Number(tl.now_month) || 8) - 1].slice(0, 3).toLowerCase()} ${String(tl.now_year || 2026).slice(2)}`;
     if ($("show-drivers")) $("show-drivers").checked = state.showDrivers;
 
     const datasets = (tl.assets || []).map((a, i) => {
@@ -2297,12 +2630,47 @@ function monthField(i) {
   return "m" + (i + 1);
 }
 
+function eventKey(year, month, category) {
+  return `${year}-${month}-${category || ""}`;
+}
+
+function visibleEvents() {
+  return (state.keyEvents || []).filter((e) => !e.suppressed && e.title);
+}
+
+function eventForCell(category, month, year) {
+  const y = year || (state.ledger && state.ledger.year) || 2026;
+  return visibleEvents().find((e) =>
+    Number(e.year) === y && Number(e.month) === month && (e.category || "") === (category || "")
+  ) || null;
+}
+
+function hydrateEvents(ledger, analytics) {
+  const fromAn = (analytics && analytics.key_events) || [];
+  const fromLed = (ledger && ledger.key_events) || [];
+  state.keyEvents = (fromAn.length ? fromAn : fromLed).map((e) => ({ ...e }));
+  state.ledgerDirty = {};
+  state.eventsDirty = false;
+}
+
+function markLedgerDirty() {
+  syncLedgerSaveBtn();
+}
+
+function syncLedgerSaveBtn() {
+  const btn = $("btn-ledger-save");
+  if (!btn) return;
+  const dirty = Object.keys(state.ledgerDirty || {}).length > 0 || state.eventsDirty;
+  btn.disabled = !dirty;
+  btn.classList.toggle("on", dirty);
+}
+
 function ledgerMonthCol(i) {
   return {
     field: monthField(i),
     headerName: MONTHS[i].slice(0, 3),
     headerTooltip: MONTHS[i],
-    minWidth: 86,
+    minWidth: 92,
     flex: 1,
     editable: true,
     type: "numericColumn",
@@ -2313,11 +2681,34 @@ function ledgerMonthCol(i) {
       "cell-forecast": (p) => (p.data && p.data.sources && p.data.sources[i]) === "forecast",
       "cell-partial": (p) => (p.data && p.data.sources && p.data.sources[i]) === "partial",
       "cell-manual": (p) => (p.data && p.data.sources && p.data.sources[i]) === "manual",
+      "cell-event": (p) => !!eventForCell(p.data && p.data.category, i + 1),
+    },
+    cellRenderer: (p) => {
+      const wrap = document.createElement("div");
+      wrap.className = "ledger-cell";
+      const val = document.createElement("span");
+      val.className = "ledger-cell-val";
+      val.textContent = p.value == null || p.value === "" ? "" : Math.round(Number(p.value)).toLocaleString("ru-RU");
+      wrap.appendChild(val);
+      const ev = eventForCell(p.data && p.data.category, i + 1);
+      const star = document.createElement("button");
+      star.type = "button";
+      star.className = "ledger-star" + (ev ? " on" : "");
+      star.title = ev ? ev.title : "Сделать ключевым событием";
+      star.setAttribute("aria-label", star.title);
+      star.textContent = ev ? "★" : "☆";
+      star.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openEventEditor(p.data.category, i + 1, ev);
+      });
+      wrap.appendChild(star);
+      return wrap;
     },
   };
 }
 
-async function onLedgerCellChanged(e) {
+function onLedgerCellChanged(e) {
   if (ledgerGridQuiet || !e.data) return;
   if (e.oldValue === e.newValue) return;
   if (Number(e.oldValue) === Number(e.newValue)) return;
@@ -2325,34 +2716,177 @@ async function onLedgerCellChanged(e) {
   if (!/^m\d+$/.test(field)) return;
   const month = Number(field.slice(1));
   const value = parseMoneyInput(e.newValue, Number(e.oldValue) || 0);
-  const revert = () => {
-    ledgerGridQuiet = true;
-    e.data[field] = e.oldValue;
-    e.api.refreshCells({ rowNodes: [e.node], columns: [e.column], force: true });
-    ledgerGridQuiet = false;
-  };
+  const key = `${e.data.category}::${month}`;
+  state.ledgerDirty[key] = { category: e.data.category, month, value };
+  if (e.data.sources) e.data.sources[month - 1] = "manual";
+  const pack = [...(state.ledger.income || []), ...(state.ledger.expense || [])]
+    .find((r) => r.category === e.data.category);
+  if (pack && Array.isArray(pack.fact)) pack.fact[month - 1] = value;
+  setStatus("Есть несохранённые правки");
+  markLedgerDirty();
+}
+
+function renderEventsStrip() {
+  const box = $("events-strip");
+  if (!box) return;
+  const list = visibleEvents().slice().sort((a, b) => (a.year - b.year) || (a.month - b.month));
+  if (!list.length) {
+    box.innerHTML = "<span class='hint'>Пока нет ключевых событий — нажмите звезду на ячейке.</span>";
+    return;
+  }
+  box.innerHTML = list.map((e, idx) => {
+    const when = `${MONTHS_SHORT[(e.month || 1) - 1]} ${String(e.year).slice(2)}`;
+    const cat = e.category ? ` · ${e.category}` : "";
+    return `<button type="button" class="event-chip" data-idx="${idx}" title="${escapeHtml((e.title || "") + cat)}">${escapeHtml(when)} · ${escapeHtml(e.title || "")}</button>`;
+  }).join("");
+  box.querySelectorAll(".event-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const e = list[Number(btn.dataset.idx)];
+      if (e) openEventEditor(e.category || "", Number(e.month), e, Number(e.year));
+    });
+  });
+}
+
+let eventEdit = null;
+
+function bindEventPop() {
+  const pop = $("event-pop");
+  if (!pop || pop.dataset.bound) return;
+  pop.dataset.bound = "1";
+  $("event-pop-save").addEventListener("click", () => {
+    const title = ($("event-pop-title").value || "").trim();
+    if (!eventEdit) return closeEventPop();
+    if (!title) {
+      setStatus("Введите название события или уберите метку");
+      return;
+    }
+    upsertLocalEvent(eventEdit, title, false);
+    closeEventPop();
+  });
+  $("event-pop-del").addEventListener("click", () => {
+    if (!eventEdit) return closeEventPop();
+    upsertLocalEvent(eventEdit, "", true);
+    closeEventPop();
+  });
+  $("event-pop-cancel").addEventListener("click", closeEventPop);
+}
+
+function openEventEditor(category, month, ev, year) {
+  const y = year || (state.ledger && state.ledger.year) || 2026;
+  eventEdit = { category: category || "", month, year: y, auto_key: ev && ev.auto_key };
+  const pop = $("event-pop");
+  if (!pop) return;
+  $("event-pop-meta").textContent = `${category || "месяц"} · ${MONTHS[month - 1]} ${y}`;
+  $("event-pop-title").value = ev && ev.title ? ev.title : "";
+  pop.hidden = false;
+  pop.classList.remove("hidden");
+  $("event-pop-title").focus();
+}
+
+function closeEventPop() {
+  const pop = $("event-pop");
+  if (pop) {
+    pop.hidden = true;
+    pop.classList.add("hidden");
+  }
+  eventEdit = null;
+}
+
+function upsertLocalEvent(edit, title, remove) {
+  const year = edit.year;
+  const month = edit.month;
+  const category = edit.category || "";
+  const autoKey = edit.auto_key || "";
+  let found = (state.keyEvents || []).find((e) => {
+    if (autoKey && e.auto_key === autoKey) return true;
+    return Number(e.year) === year && Number(e.month) === month && (e.category || "") === category && !e.suppressed;
+  });
+  if (remove) {
+    if (found && found.auto_key) {
+      found.suppressed = 1;
+      found.title = found.title || title;
+    } else if (found) {
+      state.keyEvents = state.keyEvents.filter((e) => e !== found);
+    }
+  } else if (found) {
+    found.title = title;
+    found.suppressed = 0;
+    found.category = category;
+    found.month = month;
+    found.year = year;
+  } else {
+    state.keyEvents = state.keyEvents || [];
+    state.keyEvents.push({
+      year, month, category, title,
+      source: autoKey ? "auto" : "manual",
+      auto_key: autoKey,
+      suppressed: 0,
+    });
+  }
+  state.eventsDirty = true;
+  markLedgerDirty();
+  renderEventsStrip();
+  if (ledgerGridApi) ledgerGridApi.refreshCells({ force: true });
+  setStatus("Есть несохранённые правки");
+}
+
+function bindLedgerSave() {
+  const btn = $("btn-ledger-save");
+  if (!btn || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", commitLedger);
+}
+
+async function commitLedger() {
+  const btn = $("btn-ledger-save");
+  if (!isLocalApi()) {
+    setStatus("Сохранение в Excel доступно на домашнем сервере.");
+    return;
+  }
+  const cells = Object.values(state.ledgerDirty || {});
+  const events = (state.keyEvents || []).map((e) => ({
+    year: Number(e.year) || 2026,
+    month: Number(e.month),
+    category: e.category || "",
+    title: e.title || "",
+    source: e.source || "manual",
+    auto_key: e.auto_key || "",
+    suppressed: e.suppressed ? 1 : 0,
+  }));
+  if (!cells.length && !state.eventsDirty) return;
+  if (btn) btn.disabled = true;
+  setStatus("Записываю в Excel и обновляю графики…");
   try {
-    await api("/api/ledger", {
-      method: "PATCH",
+    const res = await api("/api/ledger/commit", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         year: (state.ledger && state.ledger.year) || 2026,
-        month,
-        category: e.data.category,
-        field: "fact",
-        value,
+        cells,
+        events,
       }),
     });
-    if (e.data.sources) e.data.sources[month - 1] = "manual";
-    const pack = [...(state.ledger.income || []), ...(state.ledger.expense || [])]
-      .find((r) => r.category === e.data.category);
-    if (pack && Array.isArray(pack.fact)) pack.fact[month - 1] = value;
-    e.api.refreshCells({ rowNodes: [e.node], columns: [e.column], force: true });
+    state.ledgerDirty = {};
+    state.eventsDirty = false;
+    paintStamp(res);
     state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-    await refreshDerived();
+    const an = await api("/api/analytics");
+    state.analytics = an;
+    hydrateEvents(state.ledger, an);
+    renderLedger(state.ledger);
+    renderEventsStrip();
+    themeCharts();
+    paintCumul();
+    renderFilters();
+    paintSlice();
+    if (state.share) {
+      try { await loadShare(); } catch {}
+    }
+    setStatus(`Сохранено в ${res.excel || "Excel"}. Графики обновлены.`);
+    syncLedgerSaveBtn();
   } catch (err) {
-    revert();
-    $("upload-status").textContent = "Не записалось: " + (err.message || err);
+    setStatus("Не записалось: " + (err.message || err));
+    syncLedgerSaveBtn();
   }
 }
 
@@ -2368,7 +2902,7 @@ function ensureLedgerGrid() {
   ledgerGridApi = agGrid.createGrid(el, {
     rowData: [],
     getRowId: (p) => p.data.category,
-    rowHeight: 36,
+    rowHeight: 40,
     headerHeight: 36,
     singleClickEdit: true,
     stopEditingWhenCellsLoseFocus: true,
@@ -2398,8 +2932,8 @@ function ensureLedgerGrid() {
         headerName: "Статья",
         pinned: "left",
         lockPinned: true,
-        minWidth: 168,
-        width: 200,
+        minWidth: 150,
+        width: 180,
         editable: false,
         cellClass: (p) => (p.data && p.data.kind === "income" ? "ledger-cat-in" : "ledger-cat-out"),
       },
@@ -2425,4 +2959,4 @@ window.sashaBudgetReload = async function () {
   } catch {}
 };
 
-boot().catch((err) => { $("upload-status").textContent = err.message; });
+boot().catch((err) => { setStatus(err.message); });

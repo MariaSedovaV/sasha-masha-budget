@@ -114,8 +114,8 @@ FILTER_TREE = [
     },
     {
         "id": "expense",
-        "label": "Все расходы",
-        "tone": "sage",
+        "label": "Расходы",
+        "tone": "rose",
         "categories": EXPENSE_CATEGORIES,
         "children": [
             {"id": "basket", "label": "Корзина", "categories": BASKET_CATEGORIES},
@@ -125,7 +125,7 @@ FILTER_TREE = [
     {
         "id": "income",
         "label": "Доходы",
-        "tone": "sky",
+        "tone": "sage",
         "categories": OPERATING_INCOME,
         "children": [
             {
