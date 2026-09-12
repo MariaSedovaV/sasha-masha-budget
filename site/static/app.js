@@ -75,9 +75,7 @@ document.querySelectorAll(".tab").forEach((btn) => {
     document.querySelectorAll(".tab").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     const view = btn.dataset.view;
-    $("view-analytics").classList.toggle("hidden", view !== "analytics");
-    $("view-share").classList.toggle("hidden", view !== "share");
-    $("view-data").classList.toggle("hidden", view !== "data");
+    setActiveView(view);
     if (view === "analytics") loadAnalytics();
     else setChartExpanded(null);
     if (view === "share") loadShare();
@@ -88,6 +86,16 @@ document.querySelectorAll(".tab").forEach((btn) => {
   });
 });
 
+function setActiveView(view) {
+  $("view-analytics").classList.toggle("hidden", view !== "analytics");
+  $("view-share").classList.toggle("hidden", view !== "share");
+  $("view-data").classList.toggle("hidden", view !== "data");
+  const shell = $("shell");
+  if (shell) shell.dataset.view = view;
+  document.documentElement.dataset.view = view;
+  document.documentElement.classList.toggle("data-phone", view === "data" && ledgerCompact());
+}
+
 function money(n) {
   const sign = n < 0 ? "−" : "";
   return sign + Math.abs(Math.round(n)).toLocaleString("ru-RU") + " ₽";
@@ -97,7 +105,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "48";
+const SNAPSHOT_VER = "51";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -163,13 +171,37 @@ function syncAgTheme() {
 }
 
 function resizeDataGrids() {
+  const view = $("shell") && $("shell").dataset.view;
+  document.documentElement.classList.toggle("data-phone", view === "data" && ledgerCompact());
   if (txGridApi && typeof txGridApi.sizeColumnsToFit === "function") txGridApi.sizeColumnsToFit();
-  if (ledgerGridApi) ledgerFitIfWide(ledgerGridApi);
+  if (ledgerGridApi) {
+    applyLedgerGridLayout(ledgerGridApi);
+    ledgerFitIfWide(ledgerGridApi);
+  }
+}
+
+function ledgerCompact() {
+  return window.matchMedia("(max-width: 860px)").matches;
 }
 
 function ledgerFitIfWide(api) {
   if (!api || typeof api.sizeColumnsToFit !== "function") return;
-  if (window.innerWidth >= 1100) api.sizeColumnsToFit();
+  if (!ledgerCompact() && window.innerWidth >= 1100) api.sizeColumnsToFit();
+}
+
+function applyLedgerGridLayout(api) {
+  if (!api) return;
+  const compact = ledgerCompact();
+  api.setGridOption("domLayout", compact ? "autoHeight" : "normal");
+  api.setGridOption("alwaysShowHorizontalScroll", true);
+  api.setGridOption("alwaysShowVerticalScroll", !compact);
+  api.setGridOption("suppressColumnVirtualisation", compact);
+  api.setGridOption("rowHeight", compact ? 36 : 44);
+  api.setGridOption("headerHeight", compact ? 32 : 36);
+  if (typeof api.setColumnWidth === "function") {
+    api.setColumnWidth("category", compact ? 120 : 180, true);
+    for (let i = 1; i <= 12; i += 1) api.setColumnWidth("m" + i, compact ? 104 : 108, true);
+  }
 }
 
 function agGridAvailable() {
@@ -230,6 +262,11 @@ function applyVoiceAddsToLedger(ledger) {
 
 async function boot() {
   applyTheme(currentTheme());
+  if ($("shell") && !$("shell").dataset.view) setActiveView("analytics");
+  else setActiveView(($("shell") && $("shell").dataset.view) || "analytics");
+  window.addEventListener("resize", () => {
+    if ($("view-data") && !$("view-data").classList.contains("hidden")) resizeDataGrids();
+  });
   $("theme-toggle").addEventListener("click", () => {
     applyTheme(currentTheme() === "light" ? "dark" : "light");
   });
@@ -241,7 +278,7 @@ async function boot() {
     health = await api("/api/health");
     state.health = health;
     paintStamp(health);
-    setStatus(health.excel ? `Источник: ${health.excel}` : "");
+    setStatus("");
   } catch (err) {
     paintStamp(null);
     setStatus("Сервер недоступен, показан сохранённый снимок.");
@@ -2744,8 +2781,10 @@ function ledgerMonthCol(i) {
     field: monthField(i),
     headerName: MONTHS[i].slice(0, 3),
     headerTooltip: MONTHS[i],
-    minWidth: 108,
-    flex: 1,
+    minWidth: ledgerCompact() ? 104 : 108,
+    width: ledgerCompact() ? 104 : 108,
+    flex: ledgerCompact() ? 0 : 1,
+    suppressSizeToFit: ledgerCompact(),
     editable: true,
     type: "numericColumn",
     valueFormatter: (p) => (p.value == null || p.value === "" ? "" : Math.round(Number(p.value)).toLocaleString("ru-RU")),
@@ -2996,6 +3035,10 @@ function ensureLedgerGrid() {
     enableBrowserTooltips: true,
     popupParent: document.body,
     overlayNoRowsTemplate: "<span class='ag-overlay-msg'>Нет строк факта.</span>",
+    alwaysShowHorizontalScroll: true,
+    alwaysShowVerticalScroll: !ledgerCompact(),
+    suppressColumnVirtualisation: ledgerCompact(),
+    domLayout: ledgerCompact() ? "autoHeight" : "normal",
     defaultColDef: {
       sortable: true,
       resizable: true,
@@ -3009,15 +3052,20 @@ function ensureLedgerGrid() {
     },
     onCellValueChanged: onLedgerCellChanged,
     onGridSizeChanged: (p) => ledgerFitIfWide(p.api),
-    onFirstDataRendered: (p) => ledgerFitIfWide(p.api),
+    onFirstDataRendered: (p) => {
+      applyLedgerGridLayout(p.api);
+      ledgerFitIfWide(p.api);
+    },
     columnDefs: [
       {
         field: "category",
         headerName: "Статья",
         pinned: "left",
         lockPinned: true,
-        minWidth: 150,
-        width: 180,
+        minWidth: ledgerCompact() ? 112 : 150,
+        width: ledgerCompact() ? 120 : 180,
+        flex: 0,
+        suppressSizeToFit: true,
         editable: false,
         cellClass: (p) => (p.data && p.data.kind === "income" ? "ledger-cat-in" : "ledger-cat-out"),
       },
