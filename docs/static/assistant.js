@@ -290,6 +290,43 @@ html.assist-open,html.assist-open body{overflow:hidden}
     document.body.appendChild(wrap);
   }
 
+
+  const BRAIN_V = "1";
+  function brainSrc() {
+    const host = location.hostname;
+    const path = location.pathname;
+    if (host === "127.0.0.1" || host === "localhost") {
+      if (path.includes("/remont")) return "../butler-brain.js?v=" + BRAIN_V;
+      if (path.includes("Экосистема")) return "butler-brain.js?v=" + BRAIN_V;
+    }
+    if (/\/sasha-masha\/remont\/?/.test(path)) return "../butler-brain.js?v=" + BRAIN_V;
+    if (/\/sasha-masha\/?(index\.html)?$/.test(path)) return "butler-brain.js?v=" + BRAIN_V;
+    return HOME + "butler-brain.js?v=" + BRAIN_V;
+  }
+  function loadBrain() {
+    if (window.SashaButler) return Promise.resolve(window.SashaButler);
+    return new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = brainSrc();
+      s.onload = () => resolve(window.SashaButler || null);
+      s.onerror = () => resolve(null);
+      document.head.appendChild(s);
+    });
+  }
+  async function resolveCommand(text) {
+    try {
+      const brain = await loadBrain();
+      if (brain?.hasKey()) return await brain.ask(text);
+    } catch {
+      const fallback = handleCommand(text);
+      if (/Не расслышала/.test(fallback.say || "")) {
+        return { say: "Умный режим не ответил. Нажмите «ключ» и проверьте ключ Google AI — или скажите короткой командой." };
+      }
+      return fallback;
+    }
+    return handleCommand(text);
+  }
+
   function bootAssistant() {
     injectCss();
     injectDom();
@@ -301,6 +338,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
     const openBtn = document.getElementById("assist-open");
     const closeBtn = document.getElementById("assist-close");
     if (!panel || !form) return;
+    loadBrain().then((brain) => brain?.attach?.());
 
     function fitSheet() {
       const open = !panel.hidden && !panel.classList.contains("hidden");
@@ -325,9 +363,14 @@ html.assist-open,html.assist-open body{overflow:hidden}
       log.scrollTop = log.scrollHeight;
     }
 
-    function run(text, fromVoice) {
+    async function run(text, fromVoice) {
       addMsg("user", text);
-      const res = handleCommand(text);
+      const thinking = document.createElement("div");
+      thinking.className = "assist-msg bot";
+      thinking.textContent = "Думаю…";
+      if (window.SashaButler?.hasKey()) log.appendChild(thinking);
+      const res = await resolveCommand(text);
+      thinking.remove();
       addMsg("bot", res.say);
       if (fromVoice) speak(res.say);
       if (res.theme) document.getElementById("theme-toggle")?.click();
@@ -355,7 +398,10 @@ html.assist-open,html.assist-open body{overflow:hidden}
       panel.hidden = false;
       openBtn.classList.add("hidden");
       if (!log.childElementCount) {
-        addMsg("bot", "Привет. Могу открыть разделы, добавить дело Саше или Маше и записать трату в категорию этого месяца. Зажмите кнопку и говорите — или напишите.");
+        loadBrain().then((brain) => {
+          brain?.attach?.();
+          addMsg("bot", brain?.greeting?.() || "Привет. Могу открыть разделы, добавить дело Саше или Маше и записать трату в категорию этого месяца. Зажмите кнопку и говорите — или напишите.");
+        });
       }
       fitSheet();
       input.focus();
