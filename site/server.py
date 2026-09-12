@@ -37,13 +37,15 @@ from engine.pdf_parse import parse_statement_pdf
 from engine.seed_excel import seed_from_excel, find_excel
 from engine.share import build_share
 from engine.excel_fcf import clear_excel_cache
-from engine.excel_sync import ExcelStructureError, now_stamp, save_workbook, validate_excel
+from engine.excel_sync import ExcelStructureError, excel_is_open, now_stamp, save_workbook, validate_excel
 
 STATIC = Path(__file__).resolve().parent / "static"
 app = FastAPI(title="Sasha & Masha | Мониторинг бюджета")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://127.0.0.1:8765",
+        "http://localhost:8765",
         "http://127.0.0.1:8766",
         "http://localhost:8766",
         "https://mariasedovav.github.io",
@@ -75,12 +77,17 @@ def _seed_if_needed(conn) -> None:
 
 def _health_payload(conn) -> dict:
     closed, until = _coverage(conn)
+    updated = get_meta(conn, "updated_at")
+    if not updated:
+        excel = find_excel()
+        if excel:
+            updated = datetime.fromtimestamp(excel.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
     return {
         "ok": True,
         "excel": get_meta(conn, "excel_file"),
         "closed_month": closed,
         "fact_until": until,
-        "updated_at": get_meta(conn, "updated_at"),
+        "updated_at": updated,
         "structure_ok": get_meta(conn, "structure_ok", "1") != "0",
         "structure_error": get_meta(conn, "structure_error") or "",
     }
@@ -139,7 +146,7 @@ class FactCell(BaseModel):
 class LedgerCommit(BaseModel):
     year: int = 2026
     cells: List[FactCell] = []
-    events: List[EventRow] = []
+    events: Optional[List[EventRow]] = None
 
 
 class ApplyBody(BaseModel):
@@ -212,16 +219,21 @@ def api_commit_ledger(body: LedgerCommit):
     excel = find_excel()
     if not excel:
         raise HTTPException(404, "Не найден файл бюджета Excel в папке проекта")
-    try:
-        validate_excel(excel)
-    except ExcelStructureError as exc:
-        raise HTTPException(409, f"Структура Excel не совпала: {exc}") from exc
-
+    if excel_is_open(excel):
+        raise HTTPException(409, "Не удалось записать Excel — закройте файл в Numbers/Excel и повторите.")
     cells = [
         {"category": c.category, "month": c.month, "value": c.value}
         for c in (body.cells or [])
     ]
-    events = [e.model_dump() if hasattr(e, "model_dump") else e.dict() for e in (body.events or [])]
+    events = None
+    if body.events is not None:
+        events = [e.model_dump() if hasattr(e, "model_dump") else e.dict() for e in body.events]
+    if not cells and events is None:
+        raise HTTPException(400, "Нет изменений для записи")
+    try:
+        validate_excel(excel)
+    except ExcelStructureError as exc:
+        raise HTTPException(409, f"Структура Excel не совпала: {exc}") from exc
     try:
         save_workbook(excel, cells=cells or None, events=events)
     except PermissionError as exc:
@@ -235,7 +247,8 @@ def api_commit_ledger(body: LedgerCommit):
     conn = init_db()
     try:
         seed_from_excel(conn, excel)
-        replace_key_events(conn, events)
+        if events is not None:
+            replace_key_events(conn, events)
         set_meta(conn, "updated_at", now_stamp())
         set_meta(conn, "structure_ok", "1")
         set_meta(conn, "structure_error", "")
@@ -244,7 +257,7 @@ def api_commit_ledger(body: LedgerCommit):
         export_snapshot(also_docs=True)
         payload = _health_payload(conn)
         payload["written"] = len(cells)
-        payload["events"] = len(events)
+        payload["events"] = len(events or [])
         return payload
     except ExcelStructureError as exc:
         conn.rollback()

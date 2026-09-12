@@ -145,8 +145,20 @@ def _write_events_sheet(wb, events: list[dict]) -> None:
         r += 1
 
 
+def excel_lock_path(path: Path) -> Path:
+    return path.parent / f"~${path.name}"
+
+
+def excel_is_open(path: Path) -> bool:
+    return excel_lock_path(path).exists()
+
+
 def save_workbook(path: Path, cells: list[dict] | None = None, events: list[dict] | None = None) -> int:
     """Одна запись в тот же xlsx: ячейки факта и/или лист событий."""
+    if excel_is_open(path):
+        raise PermissionError("Excel file is open")
+    if not cells and events is None:
+        return 0
     wb = load_workbook(path, data_only=False)
     written = 0
     try:

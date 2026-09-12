@@ -46,6 +46,7 @@ let state = {
   keyEvents: [],
   ledgerDirty: {},
   eventsDirty: false,
+  health: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -96,7 +97,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "44";
+const SNAPSHOT_VER = "47";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -163,7 +164,12 @@ function syncAgTheme() {
 
 function resizeDataGrids() {
   if (txGridApi && typeof txGridApi.sizeColumnsToFit === "function") txGridApi.sizeColumnsToFit();
-  if (ledgerGridApi && typeof ledgerGridApi.sizeColumnsToFit === "function") ledgerGridApi.sizeColumnsToFit();
+  if (ledgerGridApi) ledgerFitIfWide(ledgerGridApi);
+}
+
+function ledgerFitIfWide(api) {
+  if (!api || typeof api.sizeColumnsToFit !== "function") return;
+  if (window.innerWidth >= 1100) api.sizeColumnsToFit();
 }
 
 function agGridAvailable() {
@@ -185,7 +191,7 @@ async function api(path, opts) {
   for (const url of urls) {
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const timer = setTimeout(() => ctrl.abort(), (opts && opts.method && opts.method !== "GET") ? 60000 : 8000);
       const res = await fetch(url, {
         ...opts,
         signal: ctrl.signal,
@@ -233,6 +239,7 @@ async function boot() {
   let health = { closed_month: 7, excel: null };
   try {
     health = await api("/api/health");
+    state.health = health;
     paintStamp(health);
     setStatus(health.excel ? `Источник: ${health.excel}` : "");
   } catch (err) {
@@ -615,7 +622,7 @@ function bindChartExpands() {
 }
 
 async function upload(f) {
-  setStatus "Читаю справку…";
+  setStatus("Читаю справку…");
   const fd = new FormData();
   fd.append("file", f);
   try {
@@ -623,8 +630,7 @@ async function upload(f) {
     state.importId = out.import_id;
     const detail = await api(`/api/imports/${out.import_id}`);
     state.txs = detail.transactions;
-    setStatus
-      `Разобрано ${out.count} операций (${out.header.period_from || "?"} — ${out.header.period_to || "?"}). Проверьте категории и запишите месяц.`;
+    setStatus(`Разобрано ${out.count} операций (${out.header.period_from || "?"} — ${out.header.period_to || "?"}). Проверьте категории и запишите месяц.`);
     const monthsPresent = [...new Set(state.txs.map((t) => t.month))].sort((a, b) => a - b);
     if (monthsPresent.includes(8)) state.month = 8;
     else if (monthsPresent.length) state.month = monthsPresent[monthsPresent.length - 1];
@@ -634,7 +640,7 @@ async function upload(f) {
     loadImports();
     loadMerchants();
   } catch (err) {
-    setStatus "Не получилось прочитать файл: " + err.message;
+    setStatus("Не получилось прочитать файл: " + err.message);
   }
 }
 
@@ -700,7 +706,7 @@ async function onTxCellChanged(e) {
       renderPropose();
     } catch (err) {
       revert();
-      setStatus "Не записалось: " + (err.message || err);
+      setStatus("Не записалось: " + (err.message || err));
     }
     return;
   }
@@ -722,7 +728,7 @@ async function onTxCellChanged(e) {
       loadMerchants();
     } catch (err) {
       revert();
-      setStatus "Не записалось: " + (err.message || err);
+      setStatus("Не записалось: " + (err.message || err));
     }
   }
 }
@@ -853,23 +859,25 @@ async function applyMonth() {
       body: JSON.stringify({ year: 2026, month: state.month }),
     });
     state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-    setStatus `${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`;
+    setStatus(`${MONTHS[state.month - 1]} записан в факт. Откройте аналитику — выводы пересчитались.`);
     renderPropose();
     renderLedger(state.ledger);
     await refreshDerived();
   } catch (err) {
-    setStatus "Не записалось: " + err.message;
+    setStatus("Не записалось: " + err.message);
   } finally {
     $("btn-apply").disabled = false;
   }
 }
 
 async function loadDataTab() {
-  if (!state.ledger) state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
-  if (!state.analytics) {
-    try { state.analytics = await api("/api/analytics"); } catch {}
+  if (!hasUnsavedLedger()) {
+    if (!state.ledger) state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
+    if (!state.analytics) {
+      try { state.analytics = await api("/api/analytics"); } catch {}
+    }
+    hydrateEvents(state.ledger, state.analytics);
   }
-  hydrateEvents(state.ledger, state.analytics);
   renderLedger(state.ledger);
   renderEventsStrip();
   syncLedgerSaveBtn();
@@ -1028,9 +1036,11 @@ async function loadAnalytics() {
     api("/api/ledger"),
   ]);
   state.analytics = an;
-  state.ledger = applyVoiceAddsToLedger(ledger);
-  hydrateEvents(ledger, an);
-  if (an.updated_at) paintStamp({ updated_at: an.updated_at, excel: (state.health && state.health.excel) });
+  if (!hasUnsavedLedger()) {
+    state.ledger = applyVoiceAddsToLedger(ledger);
+    hydrateEvents(ledger, an);
+  }
+  if (an.updated_at) paintStamp({ ...(state.health || {}), updated_at: an.updated_at });
 
   const dlt = an.delta;
   const closedShort = MONTHS_SHORT[an.closed_month - 1] || "";
@@ -1404,6 +1414,56 @@ function eventAtIndex(events, index) {
   return list.find((e) => e.icon === "trophy") || list[0];
 }
 
+function mergeChartEvents(baseEvents, indexMap, fact, plan) {
+  const suppressed = new Set(
+    (state.keyEvents || []).filter((e) => e.suppressed && e.auto_key).map((e) => e.auto_key)
+  );
+  const out = [];
+  const byAuto = new Map();
+  for (const e of baseEvents || []) {
+    if (e.auto_key && suppressed.has(e.auto_key)) continue;
+    const copy = { ...e };
+    out.push(copy);
+    if (copy.auto_key) byAuto.set(copy.auto_key, copy);
+  }
+  for (const s of visibleEvents()) {
+    const year = Number(s.year) || FCF_YEAR_MIN;
+    const month = Number(s.month);
+    const index = (year - FCF_YEAR_MIN) * 12 + (month - 1);
+    if (!indexMap || !indexMap.has(index)) continue;
+    const visIndex = indexMap.get(index);
+    const value = fact[visIndex] != null ? fact[visIndex] : (plan[visIndex] != null ? plan[visIndex] : 0);
+    if (s.auto_key && byAuto.has(s.auto_key)) {
+      const cur = byAuto.get(s.auto_key);
+      cur.label = s.title || cur.label;
+      if (s.category) cur.category = s.category;
+      cur.visIndex = visIndex;
+      continue;
+    }
+    const dup = out.find((e) =>
+      e.visIndex === visIndex
+      && (e.category || "") === (s.category || "")
+      && (!s.auto_key || !e.auto_key || e.auto_key === s.auto_key)
+    );
+    if (dup) {
+      dup.label = s.title || dup.label;
+      continue;
+    }
+    out.push({
+      index,
+      visIndex,
+      label: s.title,
+      detail: s.category || "",
+      tone: "gold",
+      category: s.category || "",
+      auto_key: s.auto_key || "",
+      source: s.source || "manual",
+      value,
+    });
+  }
+  return out;
+}
+
 function wrapTooltipText(text, width = 44) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (!clean) return [];
@@ -1586,13 +1646,20 @@ function paintCumul() {
       return v == null ? netFlow(incomeFact[vis], expenseFact[vis]) : v;
     });
     const indexMap = new Map(keep.map((orig, vis) => [orig, vis]));
-    events = (hz.events || [])
-      .filter((e) => indexMap.has(e.index))
-      .map((e) => ({ ...e, visIndex: indexMap.get(e.index) }));
+    events = mergeChartEvents(
+      (hz.events || [])
+        .filter((e) => indexMap.has(e.index))
+        .map((e) => ({ ...e, visIndex: indexMap.get(e.index) })),
+      indexMap,
+      fact,
+      plan
+    );
   } else {
     labels = MONTHS.map((m) => m.slice(0, 3));
     plan = an.series_plan || [];
     fact = an.series_fact || [];
+    const indexMap = new Map(labels.map((_, i) => [i, i]));
+    events = mergeChartEvents([], indexMap, fact, plan);
   }
 
   const eventData = labels.map((_, i) => {
@@ -2645,6 +2712,10 @@ function eventForCell(category, month, year) {
   ) || null;
 }
 
+function hasUnsavedLedger() {
+  return Object.keys(state.ledgerDirty || {}).length > 0 || state.eventsDirty;
+}
+
 function hydrateEvents(ledger, analytics) {
   const fromAn = (analytics && analytics.key_events) || [];
   const fromLed = (ledger && ledger.key_events) || [];
@@ -2660,9 +2731,12 @@ function markLedgerDirty() {
 function syncLedgerSaveBtn() {
   const btn = $("btn-ledger-save");
   if (!btn) return;
-  const dirty = Object.keys(state.ledgerDirty || {}).length > 0 || state.eventsDirty;
+  const dirty = hasUnsavedLedger();
   btn.disabled = !dirty;
   btn.classList.toggle("on", dirty);
+  btn.title = isLocalApi()
+    ? (dirty ? "Записать в тот же Excel и обновить графики" : "Нет несохранённых правок")
+    : "Сохранение в Excel доступно на домашнем сервере";
 }
 
 function ledgerMonthCol(i) {
@@ -2670,7 +2744,7 @@ function ledgerMonthCol(i) {
     field: monthField(i),
     headerName: MONTHS[i].slice(0, 3),
     headerTooltip: MONTHS[i],
-    minWidth: 92,
+    minWidth: 108,
     flex: 1,
     editable: true,
     type: "numericColumn",
@@ -2769,6 +2843,12 @@ function bindEventPop() {
     closeEventPop();
   });
   $("event-pop-cancel").addEventListener("click", closeEventPop);
+  document.addEventListener("mousedown", (e) => {
+    const box = $("event-pop");
+    if (!box || box.hidden) return;
+    if (box.contains(e.target) || e.target.closest(".ledger-star") || e.target.closest(".events-strip .event-chip")) return;
+    closeEventPop();
+  });
 }
 
 function openEventEditor(category, month, ev, year) {
@@ -2827,6 +2907,7 @@ function upsertLocalEvent(edit, title, remove) {
   markLedgerDirty();
   renderEventsStrip();
   if (ledgerGridApi) ledgerGridApi.refreshCells({ force: true });
+  if (state.analytics) paintCumul();
   setStatus("Есть несохранённые правки");
 }
 
@@ -2839,6 +2920,7 @@ function bindLedgerSave() {
 
 async function commitLedger() {
   const btn = $("btn-ledger-save");
+  if (ledgerGridApi && typeof ledgerGridApi.stopEditing === "function") ledgerGridApi.stopEditing();
   if (!isLocalApi()) {
     setStatus("Сохранение в Excel доступно на домашнем сервере.");
     return;
@@ -2857,18 +2939,20 @@ async function commitLedger() {
   if (btn) btn.disabled = true;
   setStatus("Записываю в Excel и обновляю графики…");
   try {
+    const payload = {
+      year: (state.ledger && state.ledger.year) || 2026,
+      cells,
+    };
+    if (state.eventsDirty) payload.events = events;
     const res = await api("/api/ledger/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        year: (state.ledger && state.ledger.year) || 2026,
-        cells,
-        events,
-      }),
+      body: JSON.stringify(payload),
     });
     state.ledgerDirty = {};
     state.eventsDirty = false;
-    paintStamp(res);
+    state.health = { ...(state.health || {}), ...res };
+    paintStamp(state.health);
     state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     const an = await api("/api/analytics");
     state.analytics = an;
@@ -2902,7 +2986,7 @@ function ensureLedgerGrid() {
   ledgerGridApi = agGrid.createGrid(el, {
     rowData: [],
     getRowId: (p) => p.data.category,
-    rowHeight: 40,
+    rowHeight: 44,
     headerHeight: 36,
     singleClickEdit: true,
     stopEditingWhenCellsLoseFocus: true,
@@ -2924,8 +3008,8 @@ function ensureLedgerGrid() {
       return p.data.kind === "income" ? ["ledger-in"] : ["ledger-out"];
     },
     onCellValueChanged: onLedgerCellChanged,
-    onGridSizeChanged: (p) => p.api.sizeColumnsToFit(),
-    onFirstDataRendered: (p) => p.api.sizeColumnsToFit(),
+    onGridSizeChanged: (p) => ledgerFitIfWide(p.api),
+    onFirstDataRendered: (p) => ledgerFitIfWide(p.api),
     columnDefs: [
       {
         field: "category",
@@ -2949,10 +3033,17 @@ function renderLedger(ledger) {
   ledgerGridQuiet = true;
   api.setGridOption("rowData", ledgerRowData(ledger));
   ledgerGridQuiet = false;
-  requestAnimationFrame(() => api.sizeColumnsToFit());
+  requestAnimationFrame(() => ledgerFitIfWide(api));
 }
 
+window.addEventListener("beforeunload", (e) => {
+  if (!hasUnsavedLedger()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 window.sashaBudgetReload = async function () {
+  if (hasUnsavedLedger()) return;
   try {
     state.ledger = applyVoiceAddsToLedger(await api("/api/ledger"));
     if ($("ledger-wrap")) renderLedger(state.ledger);

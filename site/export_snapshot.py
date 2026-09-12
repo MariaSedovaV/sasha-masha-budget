@@ -24,6 +24,12 @@ def main(also_docs: bool = True) -> None:
     excel = get_meta(conn, "excel_file")
     stored = list_key_events(conn)
     updated_at = get_meta(conn, "updated_at")
+    if not updated_at:
+        from datetime import datetime
+        from engine.seed_excel import find_excel
+        path = find_excel()
+        if path:
+            updated_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
     structure_ok = get_meta(conn, "structure_ok", "1") != "0"
     structure_error = get_meta(conn, "structure_error") or ""
     conn.close()

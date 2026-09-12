@@ -98,11 +98,14 @@ def _num(value) -> float:
 
 def find_excel() -> Path | None:
     root = Path("/Users/Sedova.Maria/Desktop/Саша/Мониторинг бюджета")
-    files = [p for p in root.glob("*Бюджет 2026.xlsx") if p.is_file()]
+    files = [
+        p for p in root.glob("*Бюджет 2026.xlsx")
+        if p.is_file() and not p.name.startswith("~$") and not p.name.startswith(".")
+    ]
     if files:
         return max(files, key=lambda p: p.stat().st_mtime)
     for path in EXCEL_CANDIDATES:
-        if path.exists():
+        if path.exists() and not path.name.startswith("~$"):
             return path
     return None
 
