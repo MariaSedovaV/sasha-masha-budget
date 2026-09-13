@@ -910,23 +910,42 @@ body.chart-fs .assist-panel { visibility: hidden; pointer-events: none; }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  align-items: center;
+  align-items: stretch;
   max-height: 96px;
   overflow: auto;
 }
 .events-strip .hint { margin: 0; }
 .events-strip .event-chip {
+  display: inline-flex;
+  flex-direction: row;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 0;
   border: 1px solid var(--line);
   background: var(--card-2);
   color: var(--ink);
   border-radius: 999px;
-  font: 600 11px Montserrat, sans-serif;
-  padding: 5px 10px !important;
+  font: 600 12px Montserrat, sans-serif;
+  font-size: 12px !important;
+  padding: 6px 10px !important;
   cursor: pointer;
   max-width: 100%;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-align: left;
+  line-height: 1.25;
+}
+.events-strip .event-chip-when {
+  color: var(--muted);
+  font-weight: 600;
+}
+.events-strip .event-chip-when::after {
+  content: " · ";
+  color: var(--muted);
+}
+.events-strip .event-chip-title {
+  color: inherit;
+  font-weight: 600;
 }
 .events-strip .event-chip:hover {
   border-color: var(--gold);
@@ -1817,17 +1836,53 @@ td select { width: 100%; padding: 4px; }
   .ledger-panel .panel-head .hint { display: none !important; }
   .events-strip {
     flex: none;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
+    flex-wrap: wrap;
+    overflow: visible;
     max-height: none;
     min-height: 0;
     margin: 0;
     padding: 0;
-    -webkit-overflow-scrolling: touch;
+    gap: 8px;
   }
   .events-strip .hint {
-    white-space: nowrap;
+    white-space: normal;
+  }
+  .events-strip .event-chip {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    white-space: normal;
+    min-height: 44px;
+    max-width: 100%;
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+    border-radius: 14px;
+  }
+  .events-strip .event-chip-when {
+    font-size: 11px !important;
+    letter-spacing: 0.02em;
+  }
+  .events-strip .event-chip-when::after { content: none; }
+  .events-strip .event-chip-title {
+    font-size: 13px !important;
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
+  }
+  .chart-hover {
+    min-width: min(240px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    font-size: 13px;
+    padding: 10px 12px;
+  }
+  .chart-hover-date { font-size: 12px; }
+  .chart-hover-event {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .chart-hover-event .trophy-icon {
+    width: 14px;
+    height: 14px;
   }
   .ledger-actions {
     position: fixed;

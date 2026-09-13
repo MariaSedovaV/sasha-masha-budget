@@ -105,7 +105,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "51";
+const SNAPSHOT_VER = "52";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -1823,10 +1823,18 @@ function paintCumul() {
       showLine: false,
       pointRadius: (ctx) => {
         if (eventData[ctx.dataIndex] == null) return 0;
-        return eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 5 : 6;
+        const compact = ledgerCompact();
+        const trophy = eventAtIndex(events, ctx.dataIndex)?.icon === "trophy";
+        if (compact) return trophy ? 8 : 7;
+        return trophy ? 5 : 6;
       },
-      pointHoverRadius: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 6.5 : 8),
-      pointHitRadius: 10,
+      pointHoverRadius: (ctx) => {
+        const compact = ledgerCompact();
+        const trophy = eventAtIndex(events, ctx.dataIndex)?.icon === "trophy";
+        if (compact) return trophy ? 10 : 9;
+        return trophy ? 6.5 : 8;
+      },
+      pointHitRadius: ledgerCompact() ? 18 : 10,
       pointBorderWidth: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 0 : 1),
       pointStyle: (ctx) => {
         const ev = eventAtIndex(events, ctx.dataIndex);
@@ -2850,7 +2858,7 @@ function renderEventsStrip() {
   box.innerHTML = list.map((e, idx) => {
     const when = `${MONTHS_SHORT[(e.month || 1) - 1]} ${String(e.year).slice(2)}`;
     const cat = e.category ? ` · ${e.category}` : "";
-    return `<button type="button" class="event-chip" data-idx="${idx}" title="${escapeHtml((e.title || "") + cat)}">${escapeHtml(when)} · ${escapeHtml(e.title || "")}</button>`;
+    return `<button type="button" class="event-chip" data-idx="${idx}" title="${escapeHtml((e.title || "") + cat)}"><span class="event-chip-when">${escapeHtml(when)}</span><span class="event-chip-title">${escapeHtml(e.title || "")}</span></button>`;
   }).join("");
   box.querySelectorAll(".event-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
