@@ -282,7 +282,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
           <button type="button" data-assist="запиши 1500 в такси">трата</button>
         </div>
         <form class="assist-form" id="assist-form">
-          <input id="assist-input" type="text" maxlength="240" placeholder="Открой бюджет, добавь Саше дело…" autocomplete="off" />
+          <input id="assist-input" type="text" maxlength="320" placeholder="Своими словами: что завтра, Саше купить хлеб…" autocomplete="off" />
           <button type="button" class="assist-mic" id="assist-mic">Зажать и говорить</button>
           <button type="submit">Отправить</button>
         </form>
@@ -291,7 +291,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
   }
 
 
-  const BRAIN_V = "2";
+  const BRAIN_V = "3";
   function brainSrc() {
     const host = location.hostname;
     const path = location.pathname;
@@ -316,7 +316,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
   async function resolveCommand(text) {
     try {
       const brain = await loadBrain();
-      if (brain?.hasKey()) return await brain.ask(text);
+      if (brain?.ask) return await brain.ask(text);
     } catch (err) {
       const say = window.SashaButler?.explainError?.(err)
         || "Умный режим не ответил. Попробуйте ещё раз или скажите короткой командой.";
@@ -366,7 +366,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
       const thinking = document.createElement("div");
       thinking.className = "assist-msg bot";
       thinking.textContent = "Думаю…";
-      if (window.SashaButler?.hasKey()) log.appendChild(thinking);
+      log.appendChild(thinking);
       const res = await resolveCommand(text);
       thinking.remove();
       addMsg("bot", res.say);
