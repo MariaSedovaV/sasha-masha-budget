@@ -1,16 +1,17 @@
-"""Динамика активов: ликвидность из FCF fact + недвижимость по рынку.
+"""Динамика активов: ликвидность из FCF 2026 ФАКТ + недвижимость по рынку.
 
 - Золото: 100 г с апреля 2025 × учётная цена ЦБ
-- Наличные с декабря 2025; накопления Маша/Саша с января 2026
-- Петербург: квартира и паркинг с мая 2024
-- Пхукет в портфеле с марта 2026 по контрактной стоимости (старт продаж)
+- Наличные, накопления Маша/Саша: кумулятив строк FCF 2026 ФАКТ
+- Саша инвестиции: отдельно, ОФЗ с оценкой по YTM до ноября 2026
+- Петербург: квартира 18,5 млн с мая 2024 (котлован), ключи сен 2026; паркинг отдельно
+- Пхукет: старт строительства март 2026, ключи Q3 2028, без курсовой просадки
 - Горизонт: май 2024 — декабрь 2040, помесячно
 """
 
 from __future__ import annotations
 
 from .categories import START_CAPITAL
-from .excel_fcf import read_fact_cumul_series, read_savings_balances
+from .excel_fcf import read_fact_cumul_series, read_savings_balances, read_savings_month_ends
 
 HORIZON_END = 2040
 YEARS = list(range(2024, HORIZON_END + 1))
@@ -19,14 +20,20 @@ GOLD_GRAMS = 100.0
 
 SPB_APT_BUY = 18_500_000.0
 SPB_APT_FROM = (2024, 5)
+SPB_APT_COMMISSION = (2026, 8)  # ввод в эксплуатацию
+SPB_APT_KEYS = (2026, 9)  # ключи
 SPB_PARKING_BUY = 1_450_000.0
 SPB_PARKING_FROM = (2024, 5)
-THAI_BUY = 20_922_179.0  # контракт / старт продаж, март 2026, ₽
+THAI_BUY = 20_922_179.0  # контракт / старт строительства, март 2026, ₽
 THAI_FROM = (2026, 3)
+THAI_KEYS = (2028, 9)  # ключи Q3 2028, полная оплата
 GOLD_FROM = (2025, 4)
 CASH_FROM = (2025, 12)
-MASHA_FROM = (2026, 1)
-SASHA_FROM = (2026, 1)
+MASHA_FROM = (2025, 12)
+SASHA_FROM = (2025, 12)
+SASHA_INV_FROM = (2025, 12)
+OFZ_YTM_DEFAULT = 0.155
+OFZ_FORECAST_UNTIL = (2026, 11)
 
 MONTHS_FROM = (2024, 5)
 
@@ -52,21 +59,60 @@ def _extend_cagr(base: dict[int, float], end: int, rate: float) -> dict[int, flo
     return out
 
 
-# До 2030 — ориентиры по ЖК; дальше рост от текущего уровня, а не одна и та же прибавка.
+# Узлы — конкретные месяцы (покупка / ввод / ключи), не «среднегодовой» индекс.
+# 100 на дате сделки, иначе старт квартиры съезжает из‑за паркинга и интерполяции с декабря.
+KUINDZHI_KNOTS = {
+    (2024, 5): 100.0,   # котлован, 18,5 млн
+    (2024, 12): 103.0,
+    (2025, 12): 108.0,
+    (2026, 8): 116.0,    # ввод
+    (2026, 9): 118.0,    # ключи
+    (2026, 12): 118.0,
+    (2027, 12): 124.0,
+    (2028, 12): 130.0,
+    (2029, 12): 136.0,
+    (2030, 12): 142.0,
+}
+KUINDZHI_PARKING_KNOTS = {
+    (2024, 5): 100.0,
+    (2024, 12): 104.0,
+    (2025, 12): 110.0,
+    (2026, 8): 120.0,
+    (2026, 9): 122.0,
+    (2026, 12): 122.0,
+    (2027, 12): 128.0,
+    (2028, 12): 134.0,
+    (2029, 12): 140.0,
+    (2030, 12): 146.0,
+}
+# Пхукет в рублях контракта: без краткосрочного курса бата (он давал ложную просадку в 2026).
+BANGTAO_KNOTS = {
+    (2026, 3): 100.0,    # старт строительства / контракт
+    (2026, 12): 100.0,
+    (2027, 12): 112.0,
+    (2028, 9): 128.0,    # ключи Q3, полная оплата
+    (2028, 12): 132.0,
+    (2029, 12): 145.0,
+    (2030, 12): 158.0,
+}
+KUINDZHI_CAGR = 0.035
+KUINDZHI_PARKING_CAGR = 0.03
+BANGTAO_CAGR = 0.04
+
 KUINDZHI_INDEX = _extend_cagr(
-    {2024: 100.0, 2025: 108.0, 2026: 118.0, 2027: 124.0, 2028: 130.0, 2029: 136.0, 2030: 142.0},
+    {y: KUINDZHI_KNOTS[(y, 12)] for y in range(2024, 2031)},
     HORIZON_END,
-    0.035,
+    KUINDZHI_CAGR,
 )
 KUINDZHI_PARKING_INDEX = _extend_cagr(
-    {2024: 100.0, 2025: 110.0, 2026: 122.0, 2027: 128.0, 2028: 134.0, 2029: 140.0, 2030: 146.0},
+    {y: KUINDZHI_PARKING_KNOTS[(y, 12)] for y in range(2024, 2031)},
     HORIZON_END,
-    0.03,
+    KUINDZHI_PARKING_CAGR,
 )
 BANGTAO_INDEX = _extend_cagr(
-    {2026: 100.0, 2027: 112.0, 2028: 128.0, 2029: 145.0, 2030: 158.0},
+    {2026: 100.0, 2027: 112.0, 2028: 132.0, 2029: 145.0, 2030: 158.0},
     HORIZON_END,
-    0.04,
+    BANGTAO_CAGR,
 )
 FX_USD = _extend_linear(
     {2024: 92.0, 2025: 90.0, 2026: 86.6, 2027: 88.0, 2028: 90.0, 2029: 92.0, 2030: 94.0},
@@ -130,18 +176,17 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
     balances = read_savings_balances(closed_month)
     gold = GOLD_GRAMS * gold_price
     if balances:
-        masha = max(0.0, balances["masha"])
-        sasha = max(0.0, balances["sasha"])
+        masha = float(balances["masha"] or 0.0)
+        sasha = float(balances["sasha"] or 0.0)
         cash = max(0.0, balances.get("cash", 0.0))
-        allocated = gold + masha + sasha + cash
-        if cumul > allocated:
-            masha += cumul - allocated
+        sasha_invest = float(balances.get("sasha_invest") or 0.0)
     else:
         sasha = _sum_cat(
             rows, ytd, ["Зарплата Саша", "Премия Саша", "Продажа квартиры Саша"], "fact"
         )
         masha = _sum_cat(rows, ytd, ["Зарплата Маша", "Премия Маша"], "fact")
         cash = max(0.0, cumul - gold - masha - sasha)
+        sasha_invest = 0.0
 
     return {
         "liquid_total": cumul,
@@ -151,8 +196,8 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
         "gold_price": gold_price,
         "sasha": sasha,
         "masha": masha,
-        "sasha_savings": (balances or {}).get("sasha_savings"),
-        "sasha_invest": (balances or {}).get("sasha_invest"),
+        "sasha_savings": (balances or {}).get("sasha_savings", sasha),
+        "sasha_invest": sasha_invest,
         "sasha_income_ytd": _sum_cat(
             rows, ytd, ["Зарплата Саша", "Премия Саша", "Продажа квартиры Саша"], "fact"
         ),
@@ -204,14 +249,86 @@ def _year_end_at(table: dict[int, float], year: int, month: int) -> float:
     return start + (end - start) * (month / 12.0)
 
 
-def _liquid_path(base_now: float, year: int, month: int, start: tuple[int, int], closed: tuple[int, int]) -> float | None:
-    """До закрытого месяца держим факт (истории помесячно нет); дальше +2.5% годовых."""
+def _interp_knots(
+    knots: dict[tuple[int, int], float],
+    year: int,
+    month: int,
+    after_cagr: float | None = None,
+) -> float:
+    """Линейно между узлами (год, месяц); после последнего — сложный процент."""
+    key = (year, month)
+    points = sorted(knots)
+    if not points:
+        return 0.0
+    if key in knots:
+        return float(knots[key])
+    if key <= points[0]:
+        return float(knots[points[0]])
+    last = points[-1]
+    if key >= last:
+        last_v = float(knots[last])
+        if not after_cagr:
+            return last_v
+        months_ahead = _ym_key(year, month) - _ym_key(*last)
+        return last_v * ((1 + after_cagr) ** (months_ahead / 12.0))
+    for a, b in zip(points, points[1:]):
+        if a <= key <= b:
+            n0, n1, n = _ym_key(*a), _ym_key(*b), _ym_key(year, month)
+            w = (n - n0) / (n1 - n0) if n1 != n0 else 1.0
+            return float(knots[a]) + (float(knots[b]) - float(knots[a])) * w
+    return float(knots[last])
+
+
+def _liquid_at(
+    series: dict[tuple[int, int], float] | None,
+    year: int,
+    month: int,
+    start: tuple[int, int],
+    fallback: float | None = None,
+) -> float | None:
     if not _at_or_after(year, month, start):
         return None
-    if (year, month) <= closed:
-        return base_now
-    years_ahead = (_ym_key(year, month) - _ym_key(*closed)) / 12.0
-    return base_now * (1 + 0.025 * years_ahead)
+    if series is not None and (year, month) in series:
+        return float(series[(year, month)])
+    return fallback
+
+
+def _ofz_ytm(markets: dict | None) -> tuple[float, str]:
+    """Доходность ОФЗ: RGBEY с Мосбиржи, иначе 15,5%."""
+    raw = (markets or {}).get("ofz_ytm") or {}
+    val = raw.get("value") if isinstance(raw, dict) else raw
+    try:
+        ytm = float(val)
+    except (TypeError, ValueError):
+        ytm = OFZ_YTM_DEFAULT
+    if ytm > 1:
+        ytm /= 100.0
+    if not (0.02 <= ytm <= 0.40):
+        ytm = OFZ_YTM_DEFAULT
+    src = (raw.get("name") if isinstance(raw, dict) else None) or "RGBI"
+    return ytm, src
+
+
+def ofz_market_path(
+    start: float,
+    flows: dict[tuple[int, int], float] | None,
+    ytm: float,
+    accrue_until: tuple[int, int] = OFZ_FORECAST_UNTIL,
+    end: tuple[int, int] = (HORIZON_END, 12),
+) -> dict[tuple[int, int], float]:
+    """Номинал ОФЗ + помесячный пересчёт цены по YTM до ноября 2026, затем поток плана."""
+    flows = flows or {}
+    value = float(start or 0.0)
+    out: dict[tuple[int, int], float] = {(2025, 12): value}
+    monthly_rate = float(ytm) / 12.0
+    for year, month in _iter_months((2026, 1), end):
+        if (year, month) <= accrue_until and value > 0:
+            value *= 1.0 + monthly_rate
+        value += float(flows.get((year, month), 0.0) or 0.0)
+        if value < 0:
+            value = 0.0
+        out[(year, month)] = value
+    return out
 
 
 def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict | None = None) -> dict:
@@ -221,6 +338,14 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
     live_gold = (markets.get("gold_gram") or {}).get("value") or GOLD_GRAM[2026]
     gold_px = _blend(GOLD_GRAM, live_gold)
     liq = liquid_from_ledger(rows, closed_month, gold_px[2026])
+    savings_paths = read_savings_month_ends(closed_month) or {}
+    ofz_ytm, ofz_src = _ofz_ytm(markets)
+    ofz_start = float(savings_paths.get("sasha_invest_start") or liq.get("sasha_invest") or 1_550_000)
+    ofz_path = ofz_market_path(
+        ofz_start,
+        savings_paths.get("sasha_invest_flows"),
+        ofz_ytm,
+    )
 
     thai_paid_now = _sum_cat(rows, list(range(1, closed_month + 1)), ["Квартира Тайланд"], "fact")
 
@@ -232,29 +357,23 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
     def spb_apt_at(year: int, month: int) -> float | None:
         if not _at_or_after(year, month, SPB_APT_FROM):
             return None
-        idx = _year_end_at(KUINDZHI_INDEX, year, month)
-        return SPB_APT_BUY * (idx / KUINDZHI_INDEX[SPB_APT_FROM[0]])
+        idx = _interp_knots(KUINDZHI_KNOTS, year, month, KUINDZHI_CAGR)
+        return SPB_APT_BUY * (idx / 100.0)
 
     def spb_park_at(year: int, month: int) -> float | None:
         if not _at_or_after(year, month, SPB_PARKING_FROM):
             return None
-        idx = _year_end_at(KUINDZHI_PARKING_INDEX, year, month)
-        return SPB_PARKING_BUY * (idx / KUINDZHI_PARKING_INDEX[SPB_PARKING_FROM[0]])
+        idx = _interp_knots(KUINDZHI_PARKING_KNOTS, year, month, KUINDZHI_PARKING_CAGR)
+        return SPB_PARKING_BUY * (idx / 100.0)
 
     def phuket_market_at(year: int, month: int) -> float | None:
         if not _at_or_after(year, month, THAI_FROM):
             return None
-        idx_now = _year_end_at(BANGTAO_INDEX, year, month)
-        idx_start = _year_end_at(BANGTAO_INDEX, THAI_FROM[0], THAI_FROM[1])
-        if idx_start <= 0 or idx_now <= 0:
-            return None
-        thb_now = _year_end_at(thb, year, month)
-        thb_start = _year_end_at(thb, THAI_FROM[0], THAI_FROM[1])
-        fx = (thb_now / thb_start) if thb_start else 1.0
-        return THAI_BUY * (idx_now / idx_start) * fx
+        idx = _interp_knots(BANGTAO_KNOTS, year, month, BANGTAO_CAGR)
+        return THAI_BUY * (idx / 100.0)
 
     def phuket_equity_at(year: int, month: int) -> float | None:
-        # Контракт подписан: на графике — полная рыночная стоимость, не доля оплаты.
+        # Контракт на старте строительства: на графике — рыночная оценка объекта, не доля оплаты.
         return phuket_market_at(year, month)
 
     def gold_at(year: int, month: int) -> float | None:
@@ -264,18 +383,23 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             return GOLD_GRAMS * float(gold_px[2026])
         return GOLD_GRAMS * _year_end_at(gold_px, year, month)
 
-    cash_s, masha_s, sasha_s, gold_s, spb_s, phuket_s = [], [], [], [], [], []
+    cash_s, masha_s, sasha_s, ofz_s, gold_s, spb_s, park_s, phuket_s = [], [], [], [], [], [], [], []
     for year, month in months:
-        cash_s.append(_liquid_path(liq["cash"], year, month, CASH_FROM, closed))
-        masha_s.append(_liquid_path(liq["masha"], year, month, MASHA_FROM, closed))
-        sasha_s.append(_liquid_path(liq["sasha"], year, month, SASHA_FROM, closed))
+        cash_s.append(_liquid_at(savings_paths.get("cash"), year, month, CASH_FROM, liq["cash"]))
+        masha_s.append(_liquid_at(savings_paths.get("masha"), year, month, MASHA_FROM, liq["masha"]))
+        sasha_s.append(
+            _liquid_at(
+                savings_paths.get("sasha_savings") or savings_paths.get("sasha"),
+                year,
+                month,
+                SASHA_FROM,
+                liq["sasha"],
+            )
+        )
+        ofz_s.append(_liquid_at(ofz_path, year, month, SASHA_INV_FROM, ofz_start))
         gold_s.append(gold_at(year, month))
-        apt = spb_apt_at(year, month)
-        park = spb_park_at(year, month)
-        if apt is None and park is None:
-            spb_s.append(None)
-        else:
-            spb_s.append((apt or 0) + (park or 0))
+        spb_s.append(spb_apt_at(year, month))
+        park_s.append(spb_park_at(year, month))
         phuket_s.append(phuket_equity_at(year, month))
 
     def rnd_series(series):
@@ -283,8 +407,37 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
 
     assets = [
         {"id": "cash", "label": "Наличные", "kind": "liquid", "from_year": CASH_FROM[0], "from_month": CASH_FROM[1], "series": rnd_series(cash_s)},
-        {"id": "masha", "label": "Накопления Маша", "kind": "liquid", "from_year": MASHA_FROM[0], "from_month": MASHA_FROM[1], "series": rnd_series(masha_s)},
-        {"id": "sasha", "label": "Накопления Саша", "kind": "liquid", "from_year": SASHA_FROM[0], "from_month": SASHA_FROM[1], "series": rnd_series(sasha_s)},
+        {
+            "id": "masha",
+            "label": "Накопления Маша",
+            "kind": "liquid",
+            "from_year": MASHA_FROM[0],
+            "from_month": MASHA_FROM[1],
+            "series": rnd_series(masha_s),
+            "note": "кумулятив FCF 2026 ФАКТ, строка «Маша накопления»",
+        },
+        {
+            "id": "sasha",
+            "label": "Накопления Саша",
+            "kind": "liquid",
+            "from_year": SASHA_FROM[0],
+            "from_month": SASHA_FROM[1],
+            "series": rnd_series(sasha_s),
+            "note": "кумулятив FCF 2026 ФАКТ, строка «Саша накопления»",
+        },
+        {
+            "id": "sasha_invest",
+            "label": "Саша инвестиции",
+            "kind": "liquid",
+            "from_year": SASHA_INV_FROM[0],
+            "from_month": SASHA_INV_FROM[1],
+            "series": rnd_series(ofz_s),
+            "note": (
+                f"ОФЗ · старт {ofz_start/1e6:.2f} млн ₽ · "
+                f"оценка по {ofz_src} {ofz_ytm*100:.1f}% до ноября 2026 · "
+                f"продажа 1,2 млн ₽ в ноябре по плану"
+            ),
+        },
         {
             "id": "gold",
             "label": "Золото",
@@ -301,7 +454,16 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "from_year": SPB_APT_FROM[0],
             "from_month": SPB_APT_FROM[1],
             "series": rnd_series(spb_s),
-            "note": "ЖК «Куинджи»: квартира + паркинг, май 2024",
+            "note": "ЖК «Куинджи»: квартира 18,5 млн, котлован май 2024, ключи сен 2026",
+        },
+        {
+            "id": "parking",
+            "label": "Паркинг Петербург",
+            "kind": "property",
+            "from_year": SPB_PARKING_FROM[0],
+            "from_month": SPB_PARKING_FROM[1],
+            "series": rnd_series(park_s),
+            "note": "ЖК «Куинджи»: паркинг 1,45 млн, май 2024",
         },
         {
             "id": "phuket",
@@ -311,7 +473,8 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "from_month": THAI_FROM[1],
             "series": rnd_series(phuket_s),
             "note": (
-                f"So Origin Bangtao · контракт март 2026 · {THAI_BUY/1e6:.2f} млн ₽"
+                f"So Origin Bangtao · старт строительства март 2026 · "
+                f"ключи Q3 2028 · контракт {THAI_BUY/1e6:.2f} млн ₽"
             ),
         },
     ]
@@ -327,6 +490,13 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
     then_2030 = portfolio[i_2030] or 0
     then = portfolio[i_2040] or 0
     current = {a["id"]: (a["series"][now_index] or 0) for a in assets}
+    liq = dict(liq)
+    liq["masha"] = current.get("masha") or 0
+    liq["sasha"] = current.get("sasha") or 0
+    liq["sasha_savings"] = current.get("sasha") or 0
+    liq["sasha_invest"] = current.get("sasha_invest") or 0
+    liq["ofz_ytm"] = ofz_ytm
+    liq["ofz_src"] = ofz_src
     # «Сейчас» и состав — без Пхукета (котлован); на графике портфеля он остаётся.
     now_headline = max(0, now - (current.get("phuket") or 0))
 
@@ -341,7 +511,10 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "buy": SPB_APT_BUY,
             "buy_year": 2024,
             "shares": [{"owner": "Саша", "share": 1.0}],
-            "note": f"покупка май 2024 · рынок × индекс {KUINDZHI_INDEX[2026]:.0f}/100",
+            "note": (
+                f"котлован май 2024 · 18,5 млн ₽ · ввод авг 2026 · ключи сен 2026 · "
+                f"сейчас {apt_now/1e6:.2f} млн"
+            ),
         },
         {
             "name": "Куинджи · паркинг",
@@ -349,7 +522,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "buy": SPB_PARKING_BUY,
             "buy_year": 2024,
             "shares": [{"owner": "Маша", "share": 1.0}],
-            "note": f"покупка май 2024 · рынок × индекс {KUINDZHI_PARKING_INDEX[2026]:.0f}/100",
+            "note": f"покупка май 2024 · 1,45 млн ₽ · сейчас {park_now/1e6:.2f} млн",
         },
         {
             "name": "Bangtao · So Origin",
@@ -358,8 +531,9 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "buy_year": 2026,
             "shares": [{"owner": "Маша", "share": 0.5}, {"owner": "Саша", "share": 0.5}],
             "note": (
-                f"контракт март 2026 · {THAI_BUY:,.0f} ₽ · "
-                f"сейчас {phuket_mkt_now/1e6:.2f} млн · оплачено {thai_paid_now/1e6:.2f} млн"
+                f"старт строительства март 2026 · ключи Q3 2028 при полной оплате · "
+                f"контракт {THAI_BUY/1e6:.2f} млн ₽ · сейчас {phuket_mkt_now/1e6:.2f} млн · "
+                f"оплачено {thai_paid_now/1e6:.2f} млн"
             ),
         },
     ]
@@ -394,8 +568,8 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "usd": {"unit": "₽/$", "series": usd_m},
             "thb": {"unit": "₽/฿", "series": thb_m},
             "gold": {"unit": "₽/г", "series": gold_m},
-            "kuindzhi": {"unit": "индекс", "series": [_year_end_at(KUINDZHI_INDEX, y, m) for y, m in months]},
-            "bangtao": {"unit": "индекс", "series": [_year_end_at(BANGTAO_INDEX, y, m) for y, m in months]},
+            "kuindzhi": {"unit": "индекс", "series": [_interp_knots(KUINDZHI_KNOTS, y, m, KUINDZHI_CAGR) for y, m in months]},
+            "bangtao": {"unit": "индекс", "series": [_interp_knots(BANGTAO_KNOTS, y, m, BANGTAO_CAGR) for y, m in months]},
         },
         "kpis": {
             "now": now_headline,
@@ -409,21 +583,29 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
                 "cash": current["cash"],
                 "masha": current["masha"],
                 "sasha": current["sasha"],
+                "sasha_invest": current.get("sasha_invest") or 0,
                 "gold": current["gold"],
                 "spb": current["spb"],
+                "parking": current.get("parking") or 0,
                 "phuket": 0,
             },
         },
         "assumptions": [
             f"Золото: куплено в апреле 2025, {GOLD_GRAMS:.0f} г × цена ЦБ на закрытый месяц ({gold_px[2026]:,.0f} ₽/г).",
-            "Наличные — с декабря 2025; накопления Маша и Саша — с января 2026. До закрытого месяца на графике факт (без выдуманной внутригодовой траектории), далее +2,5% годовых.",
-            "Куинджи: квартира и паркинг с мая 2024. До 2030 — индекс ЖК, с 2031 — 3,5% и 3% годовых от текущего уровня.",
-            f"Пхукет: на графике портфеля с марта 2026 — контракт {THAI_BUY/1e6:.2f} млн ₽ (старт продаж), далее индекс Bangtao и курс бата. В «Сейчас» и составе не входит — до сдачи. До 2030 индекс Bangtao, с 2031 — 4% годовых в батах.",
-            "USD: 2026 — курс ЦБ; к 2030 сценарий 94 ₽; далее +2 ₽/год (~2%/год), близко к разрыву инфляции 4% РФ / 2% США при цели ЦБ. Это сценарий, не прогноз ЦБ.",
+            "Наличные («Доллары дома»), накопления Маша и накопления Саша: кумулятив строк 14–16 FCF 2026 ФАКТ (старт в кол. B плюс месячные потоки; у Маши в августе минус парковка). С сентября 2026 — формулы факта, которые тянут FCF ПЛАН. С 2027 — потоки плана от декабря 2026.",
+            (
+                f"Саша инвестиции — отдельно: ОФЗ, старт {ofz_start/1e6:.2f} млн ₽. "
+                f"Цена до ноября 2026 — помесячно по доходности {ofz_src} {ofz_ytm*100:.1f}% годовых "
+                f"(купон/переоценка). В ноябре 2026 — продажа 1,2 млн ₽ по плану, остаток без дальнейшей переоценки."
+            ),
+            "Куинджи, квартира: 18,5 млн ₽ в мае 2024 (котлован). Ввод — август 2026, ключи — сентябрь 2026. Паркинг 1,45 млн ₽ — отдельный ряд. С 2031: +3,5% и +3% годовых.",
+            f"Пхукет: старт строительства март 2026, контракт {THAI_BUY/1e6:.2f} млн ₽; ключи и полная оплата — Q3 2028. Оценка в рублях контракта по стройке, без краткосрочного курса бата (он давал ложную просадку сразу после покупки). В «Сейчас» не входит до сдачи. С 2031 — +4% годовых.",
+            "USD: 2026 — курс ЦБ; к 2030 сценарий 94 ₽; далее +2 ₽/год. Это сценарий, не прогноз ЦБ.",
             f"2027–{HORIZON_END} — сценарий, не инвестсовет.",
         ],
         "sources": [
-            "FCF 2026 ФАКТ — кумулятив, накопления, доллары, инвестиции",
+            "FCF 2026 ФАКТ — кумулятив накоплений Маша/Саша, доллары, Саша инвестиции",
+            f"Мосбиржа {ofz_src} — доходность ОФЗ для оценки инвестиций",
             "ЖК «Куинджи» (RBI)",
             "So Origin Bangtao Beach — freehold",
             f"ЦБ РФ — USD, THB, золото ({gold_px[2026]:,.0f} ₽/г)",

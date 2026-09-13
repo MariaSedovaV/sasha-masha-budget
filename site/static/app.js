@@ -15,6 +15,25 @@ const FALLBACK_TREE = [
 const FCF_YEAR_MIN = 2026;
 const FCF_YEAR_MAX = 2040;
 const FCF_RANGE_DEFAULT = [2026, 2030];
+const FCF_Q_LABELS = ["I", "II", "III", "IV"];
+const SLICE_DEFAULT_GROUPS = ["income", "expense"];
+
+function fcfQuarterIndex(year, quarter = 0) {
+  return Number(year) * 4 + Number(quarter);
+}
+
+function fcfQuarterParts(idx) {
+  const n = Math.round(Number(idx) || 0);
+  const year = Math.floor(n / 4);
+  const q = ((n % 4) + 4) % 4;
+  return { year, q };
+}
+
+function fcfQuarterLabel(idx, withYear = true) {
+  const { year, q } = fcfQuarterParts(idx);
+  return withYear ? `${year} ${FCF_Q_LABELS[q]}` : FCF_Q_LABELS[q];
+}
+
 const ASSET_YEAR_MIN = 2024;
 const ASSET_YEAR_MAX = 2040;
 const ASSET_RANGE_DEFAULT = [2024, 2028];
@@ -27,14 +46,14 @@ let state = {
   ledger: null,
   month: 8,
   analytics: null,
-  filterGroups: [],
+  filterGroups: [...SLICE_DEFAULT_GROUPS],
   selectedCats: [],
   includeBasket: true,
   sliceDetail: false,
-  fcfFrom: FCF_RANGE_DEFAULT[0],
-  fcfTo: FCF_RANGE_DEFAULT[1],
-  assetFrom: ASSET_RANGE_DEFAULT[0],
-  assetTo: ASSET_RANGE_DEFAULT[1],
+  fcfFrom: fcfQuarterIndex(FCF_RANGE_DEFAULT[0], 0),
+  fcfTo: fcfQuarterIndex(FCF_RANGE_DEFAULT[1], 3),
+  assetFrom: fcfQuarterIndex(ASSET_RANGE_DEFAULT[0], 0),
+  assetTo: fcfQuarterIndex(ASSET_RANGE_DEFAULT[1], 3),
   merchants: [],
   share: null,
   showDrivers: false,
@@ -105,7 +124,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "52";
+const SNAPSHOT_VER = "61";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -266,6 +285,10 @@ async function boot() {
   else setActiveView(($("shell") && $("shell").dataset.view) || "analytics");
   window.addEventListener("resize", () => {
     if ($("view-data") && !$("view-data").classList.contains("hidden")) resizeDataGrids();
+    Object.keys(charts || {}).forEach((id) => {
+      const chart = charts[id];
+      if (chart && typeof chart.resize === "function") chart.resize();
+    });
   });
   $("theme-toggle").addEventListener("click", () => {
     applyTheme(currentTheme() === "light" ? "dark" : "light");
@@ -321,7 +344,7 @@ if ($("btn-apply")) $("btn-apply").addEventListener("click", applyMonth);
 if ($("rule-form")) $("rule-form").addEventListener("submit", saveRule);
 
 $("btn-reset-filters").addEventListener("click", () => {
-  state.filterGroups = [];
+  state.filterGroups = [...SLICE_DEFAULT_GROUPS];
   state.selectedCats = [];
   state.includeBasket = true;
   state.sliceDetail = false;
@@ -359,13 +382,16 @@ function timelineSpecs() {
       boundKey: "fcfTimelineBound",
       fromKey: "fcfFrom",
       toKey: "fcfTo",
-      defaults: FCF_RANGE_DEFAULT,
+      unit: "quarter",
+      defaults: [
+        fcfQuarterIndex(FCF_RANGE_DEFAULT[0], 0),
+        fcfQuarterIndex(FCF_RANGE_DEFAULT[1], 3),
+      ],
       bounds: () => {
         const hz = state.analytics && state.analytics.fcf_horizon;
-        return {
-          min: Number(hz && hz.start_year) || FCF_YEAR_MIN,
-          max: Number(hz && hz.end_year) || FCF_YEAR_MAX,
-        };
+        const minY = Number(hz && hz.start_year) || FCF_YEAR_MIN;
+        const maxY = Number(hz && hz.end_year) || FCF_YEAR_MAX;
+        return { min: fcfQuarterIndex(minY, 0), max: fcfQuarterIndex(maxY, 3) };
       },
       onChange: () => paintCumul(),
     },
@@ -374,17 +400,31 @@ function timelineSpecs() {
       boundKey: "assetTimelineBound",
       fromKey: "assetFrom",
       toKey: "assetTo",
-      defaults: ASSET_RANGE_DEFAULT,
+      unit: "quarter",
+      defaults: [
+        fcfQuarterIndex(ASSET_RANGE_DEFAULT[0], 0),
+        fcfQuarterIndex(ASSET_RANGE_DEFAULT[1], 3),
+      ],
       bounds: () => {
         const tl = state.share && state.share.timeline;
-        return {
-          min: Number(tl && tl.start_year) || ASSET_YEAR_MIN,
-          max: Number(tl && tl.end_year) || ASSET_YEAR_MAX,
-        };
+        const minY = Number(tl && tl.start_year) || ASSET_YEAR_MIN;
+        const maxY = Number(tl && tl.end_year) || ASSET_YEAR_MAX;
+        return { min: fcfQuarterIndex(minY, 0), max: fcfQuarterIndex(maxY, 3) };
       },
       onChange: () => paintShare(),
     },
   };
+}
+
+function formatTimelineRange(kind, from, to) {
+  const spec = timelineSpecs()[kind];
+  if (!spec || spec.unit !== "quarter") return from === to ? String(from) : `${from} — ${to}`;
+  const a = fcfQuarterParts(from);
+  const b = fcfQuarterParts(to);
+  if (from === to) return fcfQuarterLabel(from);
+  const left = a.q === 0 ? String(a.year) : fcfQuarterLabel(from);
+  const right = b.q === 3 ? String(b.year) : fcfQuarterLabel(to);
+  return `${left} — ${right}`;
 }
 
 function clampTimelineRange(kind) {
@@ -407,7 +447,7 @@ function clampTimelineRange(kind) {
 }
 
 function yearFromTimelinePoint(box, clientX, min, max) {
-  const ticks = [...box.querySelectorAll(".fcf-tick")];
+  const ticks = [...box.querySelectorAll("[data-qidx], .fcf-tick")];
   if (ticks.length) {
     let best = ticks[0];
     let bestDist = Infinity;
@@ -419,6 +459,8 @@ function yearFromTimelinePoint(box, clientX, min, max) {
         best = tick;
       }
     });
+    const q = Number(best.dataset.qidx);
+    if (Number.isFinite(q)) return q;
     const y = Number(best.dataset.year);
     if (Number.isFinite(y)) return y;
   }
@@ -529,14 +571,29 @@ function bindTimeline(kind) {
 
   if (slider) {
     slider.addEventListener("click", (ev) => {
-      const tick = ev.target.closest("[data-year]");
-      if (!tick || !slider.contains(tick)) return;
-      const y = Number(tick.dataset.year);
+      const qTick = ev.target.closest("[data-qidx]");
+      const yTick = ev.target.closest("[data-year]");
+      if (!qTick && !yTick) return;
+      if ((qTick && !slider.contains(qTick)) || (yTick && !slider.contains(yTick))) return;
       const { from, to } = clampTimelineRange(kind);
-      if (y < from) setTimelineHandleYear(kind, "min", y);
-      else if (y > to) setTimelineHandleYear(kind, "max", y);
-      else if (Math.abs(y - from) <= Math.abs(y - to)) setTimelineHandleYear(kind, "min", y);
-      else setTimelineHandleYear(kind, "max", y);
+      let value;
+      if (qTick) {
+        value = Number(qTick.dataset.qidx);
+      } else if (spec.unit === "quarter") {
+        const year = Number(yTick.dataset.year);
+        const q1 = fcfQuarterIndex(year, 0);
+        const q4 = fcfQuarterIndex(year, 3);
+        if (q4 < from) value = q1;
+        else if (q1 > to) value = q4;
+        else value = Math.abs(q1 - from) <= Math.abs(q4 - to) ? q1 : q4;
+      } else {
+        value = Number(yTick.dataset.year);
+      }
+      if (!Number.isFinite(value)) return;
+      if (value < from) setTimelineHandleYear(kind, "min", value);
+      else if (value > to) setTimelineHandleYear(kind, "max", value);
+      else if (Math.abs(value - from) <= Math.abs(value - to)) setTimelineHandleYear(kind, "min", value);
+      else setTimelineHandleYear(kind, "max", value);
     });
   }
   syncTimeline(kind);
@@ -566,7 +623,7 @@ function syncTimeline(kind) {
     minThumb.setAttribute("aria-valuemin", String(min));
     minThumb.setAttribute("aria-valuemax", String(to));
     minThumb.setAttribute("aria-valuenow", String(from));
-    minThumb.setAttribute("aria-valuetext", String(from));
+    minThumb.setAttribute("aria-valuetext", spec.unit === "quarter" ? fcfQuarterLabel(from) : String(from));
   }
   if (maxThumb) {
     maxThumb.style.left = toPct + "%";
@@ -574,25 +631,66 @@ function syncTimeline(kind) {
     maxThumb.setAttribute("aria-valuemin", String(from));
     maxThumb.setAttribute("aria-valuemax", String(max));
     maxThumb.setAttribute("aria-valuenow", String(to));
-    maxThumb.setAttribute("aria-valuetext", String(to));
+    maxThumb.setAttribute("aria-valuetext", spec.unit === "quarter" ? fcfQuarterLabel(to) : String(to));
   }
-  if (label) label.textContent = from === to ? String(from) : `${from} — ${to}`;
+  if (label) label.textContent = formatTimelineRange(kind, from, to);
   if (scale) {
-    const years = [];
-    for (let y = min; y <= max; y++) years.push(y);
-    const tickCount = String(years.length);
-    scale.style.setProperty("--fcf-ticks", tickCount);
-    if (slider) slider.style.setProperty("--fcf-ticks", tickCount);
-    const ticks = [...scale.querySelectorAll(".fcf-tick")];
-    if (ticks.length !== years.length) {
-      scale.innerHTML = years.map((y) => {
-        const on = y >= from && y <= to;
-        return `<button type="button" class="fcf-tick${on ? " on" : ""}" data-year="${y}">${String(y).slice(2)}</button>`;
-      }).join("");
-    } else {
-      ticks.forEach((el, i) => {
-        el.classList.toggle("on", years[i] >= from && years[i] <= to);
+    if (spec.unit === "quarter") {
+      const minY = fcfQuarterParts(min).year;
+      const maxY = fcfQuarterParts(max).year;
+      const years = [];
+      for (let y = minY; y <= maxY; y++) years.push(y);
+      const tickCount = years.length * 4;
+      scale.style.setProperty("--fcf-ticks", String(tickCount));
+      scale.style.setProperty("--fcf-years", String(years.length));
+      if (slider) {
+        slider.style.setProperty("--fcf-ticks", String(tickCount));
+        slider.style.setProperty("--fcf-years", String(years.length));
+      }
+      scale.classList.add("fcf-scale-q");
+      const qTicks = [];
+      for (let y = minY; y <= maxY; y++) {
+        for (let q = 0; q < 4; q++) {
+          const idx = fcfQuarterIndex(y, q);
+          const on = idx >= from && idx <= to;
+          qTicks.push(
+            `<button type="button" class="fcf-tick q-tick${q === 0 ? " q1" : ""}${on ? " on" : ""}" data-qidx="${idx}" data-year="${y}" aria-label="${fcfQuarterLabel(idx)}"></button>`
+          );
+        }
+      }
+      const yearLabs = [];
+      years.forEach((y) => {
+        const q1 = fcfQuarterIndex(y, 0);
+        const q4 = fcfQuarterIndex(y, 3);
+        const on = q4 >= from && q1 <= to;
+        yearLabs.push(
+          `<button type="button" class="fcf-year-lab${on ? " on" : ""}" data-year="${y}">${String(y).slice(2)}</button>`
+        );
+        yearLabs.push(
+          '<span class="fcf-year-gap" aria-hidden="true"></span>'.repeat(3)
+        );
       });
+      scale.innerHTML =
+        `<div class="fcf-q-ticks">${qTicks.join("")}</div>` +
+        `<div class="fcf-q-years">${yearLabs.join("")}</div>`;
+    } else {
+      const years = [];
+      for (let y = min; y <= max; y++) years.push(y);
+      const tickCount = String(years.length);
+      scale.style.setProperty("--fcf-ticks", tickCount);
+      if (slider) slider.style.setProperty("--fcf-ticks", tickCount);
+      scale.classList.remove("fcf-scale-q");
+      const ticks = [...scale.querySelectorAll(".fcf-tick")];
+      if (ticks.length !== years.length) {
+        scale.innerHTML = years.map((y) => {
+          const on = y >= from && y <= to;
+          return `<button type="button" class="fcf-tick${on ? " on" : ""}" data-year="${y}">${String(y).slice(2)}</button>`;
+        }).join("");
+      } else {
+        ticks.forEach((el, i) => {
+          el.classList.toggle("on", years[i] >= from && years[i] <= to);
+        });
+      }
     }
   }
 }
@@ -1029,6 +1127,46 @@ function scaleOpts() {
   };
 }
 
+function isQuarterIndex(labels, i) {
+  const lab = labels && labels[i];
+  if (lab != null && String(lab).includes(".")) {
+    const m = Number(String(lab).split(".")[0]);
+    return m === 1 || m === 4 || m === 7 || m === 10;
+  }
+  return i % 3 === 0;
+}
+
+function xAxisMonthQuarter(labels) {
+  const light = currentTheme() === "light";
+  const month = light ? "rgba(28,25,21,0.035)" : "rgba(239,232,220,0.02)";
+  const quarter = light ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)";
+  const dense = (labels || []).length > 18;
+  return {
+    grid: {
+      color: (ctx) => {
+        const i = Number.isFinite(ctx && ctx.index)
+          ? ctx.index
+          : (ctx && ctx.tick && Number.isFinite(ctx.tick.value) ? ctx.tick.value : -1);
+        if (i < 0) return month;
+        return isQuarterIndex(labels, i) ? quarter : month;
+      },
+    },
+    ticks: {
+      maxRotation: 0,
+      autoSkip: false,
+      callback: (val, i) => {
+        const lab = labels[i];
+        if (lab == null) return "";
+        if (dense) {
+          const m = Number(String(lab).split(".")[0]);
+          return m === 1 ? lab : "";
+        }
+        return lab;
+      },
+    },
+  };
+}
+
 function planColor() {
   return currentTheme() === "light" ? "rgba(111,103,92,.45)" : "rgba(154,146,134,.45)";
 }
@@ -1157,13 +1295,26 @@ function catHasFact(c) {
   return (row.fact || []).some((v, i) => i < until && Math.abs(Number(v) || 0) > 0.5);
 }
 
-function sliceFocus() {
+function sliceFlags() {
   const g = new Set((state.filterGroups || []).filter((id) => id === "income" || id === "expense"));
-  const inc = g.has("income");
-  const exp = g.has("expense");
-  if (inc && !exp) return "income";
-  if (exp && !inc) return "expense";
-  return "all";
+  return {
+    income: g.has("income"),
+    expense: g.has("expense"),
+    basket: !!state.includeBasket,
+  };
+}
+
+function sliceHasData() {
+  const f = sliceFlags();
+  return f.income || f.expense || f.basket;
+}
+
+function sliceFocus() {
+  const f = sliceFlags();
+  if (f.income && !f.expense) return "income";
+  if (f.expense && !f.income) return "expense";
+  if (f.income && f.expense) return "all";
+  return "none";
 }
 
 function treeNode(id) {
@@ -1191,7 +1342,7 @@ function l1Nodes() {
 
 function selectedGroupNodes() {
   const focus = sliceFocus();
-  if (focus === "all") return [];
+  if (focus === "all" || focus === "none") return [];
   const node = treeNode(focus);
   return node ? [node] : [];
 }
@@ -1236,15 +1387,39 @@ function visibleExpenseCats() {
 
 function groupCats() {
   const focus = sliceFocus();
+  const f = sliceFlags();
   if (focus === "income") return incomeCats().filter(catHasYearData);
   if (focus === "expense") return visibleExpenseCats().filter(catHasYearData);
+  if (focus === "none" && f.basket) return basketCats().filter(catHasYearData);
   return [];
 }
 
 function activeCats() {
-  if (sliceFocus() === "all") return [];
+  const focus = sliceFocus();
+  if (focus === "all") return [];
   const selected = state.selectedCats.filter(catHasYearData);
   return selected.length ? selected : groupCats();
+}
+
+function mixHex(hex, other, t) {
+  const parse = (h) => {
+    const s = String(h || "").replace("#", "").trim();
+    if (s.length < 6) return [200, 140, 130];
+    const n = parseInt(s.slice(0, 6), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const a = parse(hex);
+  const b = parse(other);
+  const r = Math.round(a[0] + (b[0] - a[0]) * t);
+  const g = Math.round(a[1] + (b[1] - a[1]) * t);
+  const bl = Math.round(a[2] + (b[2] - a[2]) * t);
+  const toHex = (n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(bl)}`;
+}
+
+function roseSoft() {
+  const rose = cssVar("--rose") || "#d9897a";
+  return mixHex(rose, currentTheme() === "light" ? "#fff7f4" : "#f6e4df", 0.42);
 }
 
 function fcfMonthTitle(lab) {
@@ -1269,33 +1444,55 @@ function mlnSigned(v) {
 
 const fcfCrosshairPlugin = {
   id: "fcfCrosshair",
-  afterDatasetsDraw(chart) {
+  afterDatasetsDraw(chart, _args, opts) {
     const active = chart.getActiveElements();
     if (!active.length) return;
-    const { ctx, chartArea } = chart;
+    const { ctx, chartArea, scales } = chart;
     if (!chartArea) return;
     const candidates = active.filter((a) => {
       const ds = chart.data.datasets[a.datasetIndex];
       const val = ds && ds.data ? ds.data[a.index] : null;
       return ds && !ds.isEvent && val != null && !Number.isNaN(Number(val));
     });
-    const factPt = candidates.find((a) => {
-      const lab = chart.data.datasets[a.datasetIndex].label || "";
-      return lab === "CFCF факт" || lab === "FCF факт";
-    });
-    const flowPt = candidates.find((a) => {
-      const lab = chart.data.datasets[a.datasetIndex].label || "";
-      return lab === "Доходы факт" || lab === "Расходы факт";
-    });
-    const planPt = candidates.find((a) => {
-      const lab = chart.data.datasets[a.datasetIndex].label || "";
-      return lab === "CFCF план" || lab === "FCF план" || lab === "Итог план"
-        || lab === "План доходов" || lab === "План расходов";
-    });
-    const main = factPt || flowPt || planPt || candidates[0] || active.find((a) => a.element) || active[0];
-    if (!main || !main.element) return;
-    const x = main.element.x;
-    const y = main.element.y;
+    let x;
+    let y;
+    const yMode = opts && opts.yMode;
+    const idx = (candidates[0] || active[0]).index;
+    if (yMode === "sum" && scales && scales.x && scales.y) {
+      x = scales.x.getPixelForValue(idx);
+      let total = 0;
+      let any = false;
+      (chart.data.datasets || []).forEach((ds, i) => {
+        if (!ds || ds.isEvent) return;
+        const meta = chart.getDatasetMeta(i);
+        if (meta && meta.hidden) return;
+        const val = ds.data ? ds.data[idx] : null;
+        if (val == null || Number.isNaN(Number(val))) return;
+        total += Number(val);
+        any = true;
+      });
+      if (!any || !Number.isFinite(x)) return;
+      y = scales.y.getPixelForValue(total);
+    } else {
+      const factPt = candidates.find((a) => {
+        const lab = chart.data.datasets[a.datasetIndex].label || "";
+        return lab === "CFCF факт" || lab === "FCF факт";
+      });
+      const flowPt = candidates.find((a) => {
+        const lab = chart.data.datasets[a.datasetIndex].label || "";
+        return lab === "Доходы факт" || lab === "Расходы факт";
+      });
+      const planPt = candidates.find((a) => {
+        const lab = chart.data.datasets[a.datasetIndex].label || "";
+        return lab === "CFCF план" || lab === "FCF план" || lab === "Итог план"
+          || lab === "План доходов" || lab === "План расходов";
+      });
+      const main = factPt || flowPt || planPt || candidates[0] || active.find((a) => a.element) || active[0];
+      if (!main || !main.element) return;
+      x = main.element.x;
+      y = main.element.y;
+    }
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     const stroke = currentTheme() === "light" ? "rgba(110,78,40,0.38)" : "rgba(232,211,168,0.38)";
     ctx.save();
     ctx.beginPath();
@@ -1340,6 +1537,62 @@ const fcfZeroLinePlugin = {
     ctx.moveTo(chartArea.left, py);
     ctx.lineTo(chartArea.right, py);
     ctx.stroke();
+    ctx.restore();
+  },
+};
+
+const basketLimitPlugin = {
+  id: "basketLimit",
+  afterDraw(chart, _args, opts) {
+    const yVal = opts && opts.value;
+    if (yVal == null || !Number.isFinite(Number(yVal))) return;
+    const y = chart.scales && chart.scales.y;
+    const { ctx, chartArea } = chart;
+    if (!y || !chartArea) return;
+    const py = y.getPixelForValue(Number(yVal));
+    if (!Number.isFinite(py) || py < chartArea.top + 2 || py > chartArea.bottom - 2) return;
+    const rose = cssVar("--rose") || "#d9897a";
+    const light = currentTheme() === "light";
+    const stroke = light ? "rgba(185, 92, 78, 0.55)" : "rgba(217, 137, 122, 0.52)";
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+    ctx.clip();
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 6]);
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, py);
+    ctx.lineTo(chartArea.right - 2, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const label = String(opts.label || Math.round(Math.abs(Number(yVal))));
+    ctx.font = "600 9px Montserrat, sans-serif";
+    const padX = 5;
+    const tw = ctx.measureText(label).width;
+    const w = tw + padX * 2;
+    const h = 13;
+    const lx = chartArea.right - w - 1;
+    let ly = py - h - 3;
+    if (ly < chartArea.top + 1) ly = py + 3;
+    if (ly + h > chartArea.bottom - 1) ly = py - h - 3;
+    const r = 6;
+    ctx.fillStyle = light ? "rgba(243, 238, 228, 0.92)" : "rgba(17, 19, 24, 0.88)";
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(lx + r, ly);
+    ctx.arcTo(lx + w, ly, lx + w, ly + h, r);
+    ctx.arcTo(lx + w, ly + h, lx, ly + h, r);
+    ctx.arcTo(lx, ly + h, lx, ly, r);
+    ctx.arcTo(lx, ly, lx + w, ly, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = rose;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, lx + w / 2, ly + h / 2 + 0.5);
     ctx.restore();
   },
 };
@@ -1396,54 +1649,26 @@ const nowLinePlugin = {
   },
 };
 
+const TROPHY_PATH =
+  "M2.5.5A.5.5 0 0 1 3 0h10a.5.5 0 0 1 .5.5q0 .807-.034 1.536a3 3 0 1 1-1.133 5.89c-.79 1.865-1.878 2.777-2.833 3.011v2.173l1.425.356c.194.048.377.135.537.255L13.3 15.1a.5.5 0 0 1-.3.9H3a.5.5 0 0 1-.3-.9l1.838-1.379c.16-.12.343-.207.537-.255L6.5 13.11v-2.173c-.955-.234-2.043-1.146-2.833-3.012a3 3 0 1 1-1.132-5.89A33 33 0 0 1 2.5.5m.099 2.54a2 2 0 0 0 .72 3.935c-.333-1.05-.588-2.346-.72-3.935m10.083 3.935a2 2 0 0 0 .72-3.935c-.133 1.59-.388 2.885-.72 3.935";
 const TROPHY_SVG =
-  '<svg class="trophy-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 3h8v2h3.2A2.8 2.8 0 0 1 22 7.8c0 2.4-1.6 4.4-3.8 5.1A6.1 6.1 0 0 1 13 16.9V18h3v2H8v-2h3v-1.1A6.1 6.1 0 0 1 5.8 12.9C3.6 12.2 2 10.2 2 7.8A2.8 2.8 0 0 1 4.8 5H8V3Zm0 4.1H5.1c-.6 0-1.1.5-1.1 1.1 0 1.5 1 2.8 2.4 3.2l.6.1V7.1Zm10.9 0H16v4.4l.6-.1c1.4-.4 2.4-1.7 2.4-3.2 0-.6-.5-1.1-1.1-1.1ZM9.5 5.5v6.1A4.5 4.5 0 0 0 12 13a4.5 4.5 0 0 0 2.5-1.4V5.5h-5Z"/></svg>';
+  `<svg class="trophy-icon" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="${TROPHY_PATH}"/></svg>`;
 const trophyIconCache = new Map();
 
 function trophyIcon(color) {
   const key = color || "#d4b483";
   if (trophyIconCache.has(key)) return trophyIconCache.get(key);
-  const s = 96;
-  const c = document.createElement("canvas");
-  c.width = s;
-  c.height = s;
-  const g = c.getContext("2d");
-  g.translate(48, 48);
-  g.scale(0.58, 0.58);
-  g.translate(-48, -46);
-  const cx = 48;
-  const cy = 46;
-  g.fillStyle = key;
-  g.strokeStyle = key;
-  g.lineCap = "round";
-  g.lineJoin = "round";
-  g.beginPath();
-  g.moveTo(cx - 17, cy - 22);
-  g.lineTo(cx + 17, cy - 22);
-  g.quadraticCurveTo(cx + 19, cy - 1, cx, cy + 12);
-  g.quadraticCurveTo(cx - 19, cy - 1, cx - 17, cy - 22);
-  g.closePath();
-  g.fill();
-  g.beginPath();
-  g.roundRect ? g.roundRect(cx - 18, cy - 26, 36, 7, 2) : g.rect(cx - 18, cy - 26, 36, 7);
-  g.fill();
-  g.lineWidth = 5;
-  g.beginPath();
-  g.arc(cx - 18, cy - 10, 11, Math.PI * 0.2, Math.PI * 1.25, false);
-  g.stroke();
-  g.beginPath();
-  g.arc(cx + 18, cy - 10, 11, -Math.PI * 0.25, Math.PI * 0.8, false);
-  g.stroke();
-  g.fillRect(cx - 3.2, cy + 10, 6.4, 11);
-  g.beginPath();
-  g.moveTo(cx - 13, cy + 22);
-  g.lineTo(cx + 13, cy + 22);
-  g.lineTo(cx + 16, cy + 30);
-  g.lineTo(cx - 16, cy + 30);
-  g.closePath();
-  g.fill();
-  trophyIconCache.set(key, c);
-  return c;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="18" height="18" fill="${key}">` +
+    `<path d="${TROPHY_PATH}"/></svg>`;
+  const img = new Image(18, 18);
+  trophyIconCache.set(key, img);
+  img.onload = () => {
+    const chart = charts && charts["chart-cumul"];
+    if (chart) chart.update("none");
+  };
+  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  return img;
 }
 
 function eventAtIndex(events, index) {
@@ -1628,6 +1853,65 @@ function renderFcfHover(context, meta) {
   el.style.top = Math.max(4, Math.min(maxY, top)) + "px";
 }
 
+function placeChartHover(el, context) {
+  const canvas = context.chart.canvas;
+  const box = el.parentElement;
+  const tooltip = context.tooltip;
+  const caretX = tooltip.caretX;
+  const caretY = tooltip.caretY;
+  const pad = 12;
+  const tw = el.offsetWidth || 160;
+  const th = el.offsetHeight || 72;
+  const maxX = (box.clientWidth || canvas.clientWidth) - tw - 4;
+  const maxY = (box.clientHeight || canvas.clientHeight) - th - 4;
+  let left = caretX + pad;
+  let top = caretY - th - 8;
+  if (left > maxX) left = caretX - tw - pad;
+  if (top < 4) top = caretY + 14;
+  el.style.left = Math.max(4, Math.min(maxX, left)) + "px";
+  el.style.top = Math.max(4, Math.min(maxY, top)) + "px";
+}
+
+function renderAssetHover(context, meta) {
+  const el = $("asset-hover");
+  if (!el) return;
+  const tooltip = context.tooltip;
+  if (!tooltip || tooltip.opacity === 0 || !tooltip.dataPoints || !tooltip.dataPoints.length) {
+    el.hidden = true;
+    return;
+  }
+  const idx = tooltip.dataPoints[0].dataIndex;
+  const rows = [];
+  let total = 0;
+  let any = false;
+  tooltip.dataPoints.forEach((pt) => {
+    const ds = context.chart.data.datasets[pt.datasetIndex];
+    const raw = pt.raw != null ? pt.raw : (ds && ds.data ? ds.data[idx] : null);
+    if (raw == null || Number.isNaN(Number(raw))) return;
+    const n = Number(raw);
+    total += n;
+    any = true;
+    rows.push(
+      `<div class="chart-hover-row"><i class="swatch" style="background:${ds.borderColor}"></i>` +
+      `<span>${escapeHtml(ds.label)}</span><b>${mlnShort(n)} <em>млн</em></b></div>`
+    );
+  });
+  if (!any) {
+    el.hidden = true;
+    return;
+  }
+  const orig = meta.keep ? meta.keep[idx] : idx;
+  const isForecast = orig > meta.nowFull;
+  el.innerHTML =
+    `<div class="chart-hover-date">${fcfMonthTitle(meta.labels[idx])}</div>` +
+    rows.join("") +
+    `<div class="chart-hover-split"></div>` +
+    `<div class="chart-hover-row"><i class="swatch total"></i><span>Итог</span><b>${mlnShort(total)} <em>млн</em></b></div>` +
+    `<div class="chart-hover-delta">${isForecast ? "прогноз" : "факт / оценка"}</div>`;
+  el.hidden = false;
+  placeChartHover(el, context);
+}
+
 function paintCumul() {
   const an = state.analytics;
   if (!an) return;
@@ -1642,7 +1926,6 @@ function paintCumul() {
   const muted = cssVar("--muted");
   const sage = cssVar("--sage");
   const rose = cssVar("--rose");
-  const sky = cssVar("--sky") || "#8aa4c7";
   const { from, to } = clampTimelineRange("fcf");
 
   let labels = [];
@@ -1664,8 +1947,11 @@ function paintCumul() {
 
   if (hz && Array.isArray(hz.labels)) {
     hz.labels.forEach((lab, i) => {
-      const y = Number(String(lab).split(".")[1]);
-      if (y >= from && y <= to) keep.push(i);
+      const { month, year } = monthYearFromLabel(lab);
+      const q = Number.isFinite(month) && month >= 1
+        ? fcfQuarterIndex(year, Math.floor((month - 1) / 3))
+        : fcfQuarterIndex(year, 0);
+      if (q >= from && q <= to) keep.push(i);
     });
     labels = keep.map((i) => hz.labels[i]);
     plan = keep.map((i) => hz.series_plan[i]);
@@ -1702,6 +1988,10 @@ function paintCumul() {
   const eventData = labels.map((_, i) => {
     const ev = eventAtIndex(events, i);
     if (!ev) return null;
+    if (ev.icon === "trophy") {
+      if (fact[i] != null) return fact[i];
+      if (plan[i] != null) return plan[i];
+    }
     if (ev.value != null && Number.isFinite(Number(ev.value))) return Number(ev.value);
     if (fact[i] != null) return fact[i];
     if (plan[i] != null) return plan[i];
@@ -1763,17 +2053,17 @@ function paintCumul() {
       ...barCommon,
       label: "FCF факт",
       data: fcfFact,
-      backgroundColor: hexFade(sky, 0.58),
-      hoverBackgroundColor: hexFade(sky, 0.78),
+      backgroundColor: hexFade(gold, 0.48),
+      hoverBackgroundColor: hexFade(gold, 0.7),
       order: 3,
     },
     {
       ...barCommon,
       label: "FCF план",
       data: fcfPlan,
-      backgroundColor: hexFade(sky, 0.18),
-      hoverBackgroundColor: hexFade(sky, 0.32),
-      borderColor: sky,
+      backgroundColor: hexFade(gold, 0.14),
+      hoverBackgroundColor: hexFade(gold, 0.28),
+      borderColor: hexFade(gold, 0.7),
       borderWidth: 1,
       order: 4,
     },
@@ -1825,14 +2115,14 @@ function paintCumul() {
         if (eventData[ctx.dataIndex] == null) return 0;
         const compact = ledgerCompact();
         const trophy = eventAtIndex(events, ctx.dataIndex)?.icon === "trophy";
-        if (compact) return trophy ? 8 : 7;
-        return trophy ? 5 : 6;
+        if (compact) return trophy ? 12 : 7;
+        return trophy ? 9 : 6;
       },
       pointHoverRadius: (ctx) => {
         const compact = ledgerCompact();
         const trophy = eventAtIndex(events, ctx.dataIndex)?.icon === "trophy";
-        if (compact) return trophy ? 10 : 9;
-        return trophy ? 6.5 : 8;
+        if (compact) return trophy ? 14 : 9;
+        return trophy ? 11 : 8;
       },
       pointHitRadius: ledgerCompact() ? 18 : 10,
       pointBorderWidth: (ctx) => (eventAtIndex(events, ctx.dataIndex)?.icon === "trophy" ? 0 : 1),
@@ -1882,6 +2172,7 @@ function paintCumul() {
         ...scaleOpts(),
         x: {
           ...scaleOpts().x,
+          ...xAxisMonthQuarter(labels),
           offset: true,
         },
         y: {
@@ -1945,10 +2236,13 @@ function renderFilters() {
     btn.addEventListener("click", () => {
       const id = btn.dataset.g;
       const cur = new Set((state.filterGroups || []).filter((x) => x === "income" || x === "expense"));
-      if (cur.has(id)) cur.delete(id);
+      if (cur.has(id) && cur.size > 1) {
+        cur.clear();
+        cur.add(id);
+      } else if (cur.has(id)) cur.delete(id);
       else cur.add(id);
       state.filterGroups = [...cur];
-      if (sliceFocus() === "all") state.selectedCats = [];
+      if (sliceFocus() === "all" || sliceFocus() === "none") state.selectedCats = [];
       else {
         const allowed = new Set(groupCats());
         state.selectedCats = state.selectedCats.filter((c) => allowed.has(c));
@@ -2061,8 +2355,8 @@ function formatSliceNetTooltip(v) {
   return `${sign}${Math.round(Math.abs(n)).toLocaleString("ru-RU")} тыс.`;
 }
 
-function sliceResultLabel(overview) {
-  return overview ? "FCF" : "Итог";
+function sliceResultLabel(showFcf) {
+  return showFcf ? "FCF" : "Итог";
 }
 
 function fcfOverlayDatasets(netF, netP, prefix) {
@@ -2089,7 +2383,6 @@ function fcfOverlayDatasets(netF, netP, prefix) {
       pointBorderColor: gold,
       pointBorderWidth: 0,
       order: 0,
-      stack: "fcf-fact",
     },
     {
       ...mark,
@@ -2103,9 +2396,38 @@ function fcfOverlayDatasets(netF, netP, prefix) {
       pointBorderColor: gold,
       pointBorderWidth: 1.7,
       order: 1,
-      stack: "fcf-plan",
     },
   ];
+}
+
+function hideSliceLegend() {
+  const el = $("slice-legend");
+  if (!el) return;
+  el.hidden = true;
+  el.innerHTML = "";
+  el.classList.remove("only-income", "only-expense");
+}
+
+function renderSliceLegend(incomeItems, expenseItems, titles = {}) {
+  const el = $("slice-legend");
+  if (!el) return;
+  if (!incomeItems.length && !expenseItems.length) {
+    hideSliceLegend();
+    return;
+  }
+  const itemHtml = (it) =>
+    `<span class="slice-legend-item"><i class="slice-legend-swatch" style="background:${it.color}"></i>${escapeHtml(it.label)}</span>`;
+  const col = (kind, items, title) => {
+    const head = title ? `<div class="slice-legend-title">${escapeHtml(title)}</div>` : "";
+    return `<div class="slice-legend-col ${kind}">${head}<div class="slice-legend-items">${items.map(itemHtml).join("")}</div></div>`;
+  };
+  el.hidden = false;
+  el.classList.toggle("only-income", expenseItems.length === 0);
+  el.classList.toggle("only-expense", incomeItems.length === 0);
+  el.innerHTML =
+    col("income", incomeItems, titles.income || "") +
+    `<div class="slice-legend-rule" aria-hidden="true"></div>` +
+    col("expense", expenseItems, titles.expense || "");
 }
 
 function paintSlice() {
@@ -2116,15 +2438,19 @@ function paintSlice() {
   const factUntil = factMonthCount(an);
   const sage = cssVar("--sage") || "#8fbea8";
   const rose = cssVar("--rose") || "#d9897a";
+  const roseLite = roseSoft();
   const muted = cssVar("--muted");
   const indices = Array.from({ length: 12 }, (_, i) => i);
   const labels = MONTHS.map((m) => m.slice(0, 3));
+  const flags = sliceFlags();
   const focus = sliceFocus();
   const overview = focus === "all";
+  const showFcf = flags.income && (flags.expense || flags.basket);
   const incAll = incomeCats();
   const incSet = new Set(incAll);
   const nowMark = nowLineForLabels(labels, Number(an.year) || 2026);
-  const slicePlugins = [fcfZeroLinePlugin, fcfCrosshairPlugin, nowLinePlugin];
+  const slicePlugins = [fcfZeroLinePlugin, fcfCrosshairPlugin, nowLinePlugin, basketLimitPlugin];
+  const limit = Math.round((an.basket_limit || 230000) / 1000);
 
   const sumFact = (cats, i) =>
     i < factUntil ? cats.reduce((s, c) => s + ((byCat[c] && byCat[c].fact[i]) || 0), 0) / 1000 : null;
@@ -2139,19 +2465,57 @@ function paintSlice() {
     });
     const incP = indices.map((i) => sumPlan(incList, i));
     const expP = indices.map((i) => -Math.abs(sumPlan(expList, i)));
-    const netF = indices.map((i) => (incF[i] == null ? null : incF[i] + (expF[i] || 0)));
-    const netP = indices.map((i) => incP[i] + expP[i]);
+    const netF = indices.map((i) => {
+      if (incF[i] == null && expF[i] == null) return null;
+      return (incF[i] || 0) + (expF[i] || 0);
+    });
+    const netP = indices.map((i) => (incP[i] || 0) + (expP[i] || 0));
     return { incF, expF, incP, expP, netF, netP };
   };
 
-  const resultName = sliceResultLabel(overview);
+  const nestCats = (focus === "income" || focus === "expense") ? activeCats() : [];
+  const pick = (list) => {
+    const filtered = (list || []).filter(catHasYearData);
+    if (!nestCats.length) return filtered;
+    const allow = new Set(nestCats);
+    return filtered.filter((c) => allow.has(c));
+  };
+
+  const inc = flags.income ? pick(incAll) : [];
+  const basketList = flags.basket ? pick(basketCats()) : [];
+  const largeList = flags.expense ? pick(largeCats()) : [];
+  const exp = [...basketList, ...largeList];
+  const flow = flowFrom(inc, exp);
+  const resultName = sliceResultLabel(overview || showFcf);
+
+  const basketF = indices.map((i) => {
+    const v = sumFact(basketList, i);
+    return v == null ? null : -Math.abs(v);
+  });
+  const largeF = indices.map((i) => {
+    const v = sumFact(largeList, i);
+    return v == null ? null : -Math.abs(v);
+  });
+  const largeFloatF = indices.map((i) => {
+    if (largeF[i] == null && basketF[i] == null) return null;
+    const from = basketF[i] || 0;
+    return [from, from + (largeF[i] || 0)];
+  });
+
+  const barValue = (raw, parsedY) => {
+    if (Array.isArray(raw) && raw.length >= 2) return Number(raw[1] || 0) - Number(raw[0] || 0);
+    if (parsedY && typeof parsedY === "object") {
+      return Number(parsedY.end ?? parsedY.y ?? 0) - Number(parsedY.start ?? parsedY.base ?? 0);
+    }
+    return parsedY;
+  };
 
   const sliceTooltip = () => ({
     enabled: true,
     filter: (item) => item.raw != null,
     callbacks: {
       label: (ctx) => {
-        const v = ctx.parsed && ctx.parsed.y;
+        const v = barValue(ctx.raw, ctx.parsed && ctx.parsed.y);
         if (v == null) return null;
         const lab = ctx.dataset.label || "";
         if (lab.startsWith("FCF") || lab.startsWith("Итог")) {
@@ -2162,21 +2526,53 @@ function paintSlice() {
     },
   });
 
+  const overviewLegendLabels = {
+    boxWidth: 10,
+    font: { size: 10 },
+    generateLabels(chart) {
+      const gen = Chart.defaults.plugins.legend.labels.generateLabels;
+      const items = gen.call(Chart.defaults.plugins.legend.labels, chart);
+      const hasExpFact = items.some((it) => it.text === "Расходы факт");
+      const out = [];
+      items.forEach((it) => {
+        const t = String(it.text || "");
+        if (t.startsWith("Корзина") && t.includes("факт")) {
+          if (!hasExpFact) out.push({ ...it, text: "Расходы факт" });
+          return;
+        }
+        if (t.startsWith("Корзина") || t === `План ${limit}`) return;
+        out.push(it);
+      });
+      return out;
+    },
+  };
+
   const flowChartOpts = (extra = {}) => ({
     maintainAspectRatio: false,
     interaction: extra.interaction || { mode: "index", intersect: false },
-    layout: { padding: { right: 8 } },
+    layout: { padding: { right: extra.basketLimit != null ? 28 : 8 } },
     plugins: {
-      legend: legendOpts({ labels: { boxWidth: 10, font: { size: 10 }, filter: extra.legendFilter } }),
+      legend: extra.hideLegend
+        ? { display: false }
+        : legendOpts({ labels: extra.legendLabels || { boxWidth: 10, font: { size: 10 }, filter: extra.legendFilter } }),
       tooltip: extra.tooltip || sliceTooltip(),
       nowLine: nowMark.index >= 0 ? { index: nowMark.index, label: nowMark.label } : { index: -1 },
+      basketLimit: extra.basketLimit != null
+        ? { value: extra.basketLimit, label: extra.basketLimitLabel || String(Math.abs(extra.basketLimit)) }
+        : false,
     },
     scales: {
       ...scaleOpts(),
-      x: { ...scaleOpts().x, stacked: !!extra.stacked, offset: true },
+      x: {
+        ...scaleOpts().x,
+        ...xAxisMonthQuarter(labels),
+        stacked: !!extra.stacked,
+        offset: true,
+      },
       y: {
         ...scaleOpts().y,
         stacked: !!extra.stacked,
+        suggestedMin: extra.basketLimit != null ? extra.basketLimit : undefined,
         title: { display: true, text: "тыс. ₽", color: muted },
         grid: {
           color: (ctx) => (ctx.tick && ctx.tick.value === 0
@@ -2187,22 +2583,18 @@ function paintSlice() {
     },
   });
 
-  const cats = overview ? [] : activeCats();
-  const inc = overview ? incAll : (focus === "income" ? cats : []);
-  const exp = overview ? visibleExpenseCats().filter(catHasYearData) : (focus === "expense" ? cats : []);
-  const flow = flowFrom(inc, exp);
-
-  const barDs = (label, data, color) => ({
+  const barDs = (label, data, color, extra = {}) => ({
     type: "bar",
     label,
     data,
-    backgroundColor: hexFade(color, 0.72),
+    backgroundColor: hexFade(color, extra.alpha != null ? extra.alpha : 0.72),
     hoverBackgroundColor: color,
-    borderRadius: 4,
+    borderRadius: extra.radius != null ? extra.radius : 4,
     grouped: false,
     categoryPercentage: 0.58,
     barPercentage: 0.92,
-    order: 3,
+    order: extra.order != null ? extra.order : 3,
+    stack: extra.stack,
   });
   const planDs = (label, data, color) => ({
     type: "line",
@@ -2218,23 +2610,43 @@ function paintSlice() {
     order: 2,
   });
 
+  if (!sliceHasData()) {
+    hideSliceLegend();
+    paintChart("chart-slice", {
+      type: "bar",
+      plugins: slicePlugins,
+      data: { labels, datasets: [] },
+      options: flowChartOpts(),
+    });
+    return;
+  }
+
   const paintFlowOverview = () => {
-    const datasets = focus === "income"
-      ? [barDs("Доходы факт", flow.incF, sage), planDs("План доходов", flow.incP, sage)]
-      : focus === "expense"
-        ? [barDs("Расходы факт", flow.expF, rose), planDs("План расходов", flow.expP, rose)]
-        : [
-          barDs("Доходы факт", flow.incF, sage),
-          barDs("Расходы факт", flow.expF, rose),
-          planDs("План доходов", flow.incP, sage),
-          planDs("План расходов", flow.expP, rose),
-          ...fcfOverlayDatasets(flow.netF, flow.netP, resultName),
-        ];
+    hideSliceLegend();
+    const datasets = [];
+    if (flags.income) {
+      datasets.push(barDs("Доходы факт", flow.incF, sage));
+      datasets.push(planDs("План доходов", flow.incP, sage));
+    }
+    if (flags.basket) {
+      datasets.push(barDs(`Корзина ${limit} факт`, basketF, roseLite, { alpha: 0.88, order: 4 }));
+    }
+    if (flags.expense) {
+      datasets.push(barDs("Расходы факт", flags.basket ? largeFloatF : largeF, rose, { order: 5 }));
+      datasets.push(planDs("План расходов", flow.expP, rose));
+    } else if (flags.basket) {
+      datasets.push(planDs(`План ${limit}`, indices.map((i) => -Math.abs(sumPlan(basketList, i))), roseLite));
+    }
+    if (showFcf) datasets.push(...fcfOverlayDatasets(flow.netF, flow.netP, resultName));
     paintChart("chart-slice", {
       type: "bar",
       plugins: slicePlugins,
       data: { labels, datasets },
-      options: flowChartOpts(),
+      options: flowChartOpts({
+        legendLabels: overviewLegendLabels,
+        basketLimit: flags.basket ? -limit : null,
+        basketLimitLabel: String(limit),
+      }),
     });
   };
 
@@ -2243,23 +2655,30 @@ function paintSlice() {
     return;
   }
 
-  const detailCats = (overview ? [...inc, ...exp] : cats).filter(catHasFact);
+  const cats = overview ? [] : activeCats();
+  const detailCats = (overview || focus === "none" ? [...inc, ...exp] : cats).filter(catHasFact);
   const datasets = [];
   const incomePart = detailCats.filter((c) => incSet.has(c));
   const expensePart = detailCats.filter((c) => !incSet.has(c));
+  const incomeLegend = [];
+  const expenseLegend = [];
   incomePart.forEach((c, idx) => {
+    const color = DETAIL_PALETTE[idx % DETAIL_PALETTE.length];
+    incomeLegend.push({ label: c, color });
     datasets.push({
       label: c,
       cat: c,
       kind: "income",
       data: indices.map((i) => (i < factUntil ? ((byCat[c] && byCat[c].fact[i]) || 0) / 1000 : null)),
-      backgroundColor: DETAIL_PALETTE[idx % DETAIL_PALETTE.length],
+      backgroundColor: color,
       borderRadius: idx === incomePart.length - 1 ? 4 : 0,
       stack: "income",
       order: 3,
     });
   });
   expensePart.forEach((c, idx) => {
+    const color = DETAIL_PALETTE[(idx + 4) % DETAIL_PALETTE.length];
+    expenseLegend.push({ label: c, color });
     datasets.push({
       label: c,
       cat: c,
@@ -2269,7 +2688,7 @@ function paintSlice() {
         const v = ((byCat[c] && byCat[c].fact[i]) || 0) / 1000;
         return -Math.abs(v);
       }),
-      backgroundColor: DETAIL_PALETTE[(idx + 4) % DETAIL_PALETTE.length],
+      backgroundColor: color,
       borderRadius: idx === expensePart.length - 1 ? 4 : 0,
       stack: "expense",
       order: 3,
@@ -2279,19 +2698,28 @@ function paintSlice() {
     paintFlowOverview();
     return;
   }
+  renderSliceLegend(incomeLegend, expenseLegend, {
+    income: flags.income && incomeLegend.length ? "Доходы" : "",
+    expense: flags.expense && expenseLegend.length ? "Расходы" : "",
+  });
   if (focus === "income") datasets.push({ ...planDs("План доходов", flow.incP, sage), pointHitRadius: 0 });
   else if (focus === "expense") datasets.push({ ...planDs("План расходов", flow.expP, rose), pointHitRadius: 0 });
-  else {
+  else if (focus === "none" && flags.basket) {
+    datasets.push({ ...planDs(`План ${limit}`, indices.map((i) => -Math.abs(sumPlan(basketList, i))), roseLite), pointHitRadius: 0 });
+  } else if (showFcf) {
     fcfOverlayDatasets(flow.netF, flow.netP, resultName).forEach((ds) => {
       datasets.push({ ...ds, pointHitRadius: 0, pointHoverRadius: 0 });
     });
   }
   paintChart("chart-slice", {
     type: "bar",
-    plugins: [fcfZeroLinePlugin, nowLinePlugin],
+    plugins: [fcfZeroLinePlugin, nowLinePlugin, basketLimitPlugin],
     data: { labels, datasets },
     options: flowChartOpts({
       stacked: true,
+      hideLegend: true,
+      basketLimit: flags.basket ? -limit : null,
+      basketLimitLabel: String(limit),
       interaction: chartInteraction(),
       tooltip: {
         enabled: true,
@@ -2340,7 +2768,6 @@ function paintSlice() {
     }),
   });
 }
-
 function bindShareControls() {
   if (state.shareBound) return;
   state.shareBound = true;
@@ -2362,12 +2789,17 @@ function monthYearFromLabel(lab) {
   return { month: 12, year: Number(s) };
 }
 
-function keepTimelineIndexes(tl, from, to) {
+function keepTimelineIndexes(tl, from, to, unit = "year") {
   const labels = tl.labels || (tl.years || []).map(String);
   const keep = [];
   labels.forEach((lab, i) => {
-    const y = monthYearFromLabel(lab).year;
-    if (y >= from && y <= to) keep.push(i);
+    const { month, year } = monthYearFromLabel(lab);
+    if (unit === "quarter") {
+      const q = fcfQuarterIndex(year, Math.floor((Math.max(1, month) - 1) / 3));
+      if (q >= from && q <= to) keep.push(i);
+    } else if (year >= from && year <= to) {
+      keep.push(i);
+    }
   });
   return { labels, keep };
 }
@@ -2393,7 +2825,19 @@ async function loadShare() {
   }
 }
 
-function assetColor(i) {
+const ASSET_COLORS = {
+  cash: "#d4b483",
+  masha: "#6ec4c8",
+  sasha: "#8fbea8",
+  sasha_invest: "#d4a017",
+  gold: "#8aa4c7",
+  spb: "#d9897a",
+  parking: "#c4a574",
+  phuket: "#5aadb2",
+};
+
+function assetColor(i, id) {
+  if (id && ASSET_COLORS[id]) return ASSET_COLORS[id];
   return DETAIL_PALETTE[i % DETAIL_PALETTE.length];
 }
 
@@ -2431,8 +2875,10 @@ function paintShare() {
 
   if (tl) {
     bindTimeline("asset");
+    const hover = $("asset-hover");
+    if (hover) hover.hidden = true;
     const { from, to } = clampTimelineRange("asset");
-    const { labels: allLabels, keep } = keepTimelineIndexes(tl, from, to);
+    const { labels: allLabels, keep } = keepTimelineIndexes(tl, from, to, "quarter");
     const labels = keep.map((i) => allLabels[i]);
     const nowMark = nowLineForLabels(allLabels);
     let nowFull = nowMark.index;
@@ -2444,7 +2890,7 @@ function paintShare() {
     if ($("show-drivers")) $("show-drivers").checked = state.showDrivers;
 
     const datasets = (tl.assets || []).map((a, i) => {
-      const color = assetColor(i);
+      const color = assetColor(i, a.id);
       const series = keep.map((idx) => {
         const v = a.series[idx];
         return v == null ? null : v / 1e6;
@@ -2471,25 +2917,19 @@ function paintShare() {
 
     paintChart("chart-assets", {
       type: "line",
-      plugins: [nowLinePlugin],
+      plugins: [fcfCrosshairPlugin, nowLinePlugin],
       data: { labels, datasets },
       options: {
         maintainAspectRatio: false,
+        animation: { duration: 180 },
         interaction: { mode: "index", intersect: false },
         plugins: {
           legend: legendOpts(),
           tooltip: {
-            enabled: true,
-            filter: (item) => item.raw != null,
-            callbacks: {
-              title: (items) => items[0] ? fcfMonthTitle(items[0].label) : "",
-              afterBody: (items) => {
-                const orig = keep[items[0].dataIndex];
-                return orig > nowFull ? "прогноз" : "факт / оценка";
-              },
-              label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.raw).toFixed(2)} млн ₽`,
-            },
+            enabled: false,
+            external: (ctx) => renderAssetHover(ctx, { labels, keep, nowFull, datasets }),
           },
+          fcfCrosshair: { yMode: "sum" },
           nowLine: nowIdx >= 0 ? { index: nowIdx, label: nowLabel } : { index: -1 },
         },
         scales: {
@@ -2501,11 +2941,7 @@ function paintShare() {
           },
           x: {
             ...scaleOpts().x,
-            ticks: {
-              autoSkip: true,
-              maxTicksLimit: 8,
-              maxRotation: 0,
-            },
+            ...xAxisMonthQuarter(labels),
           },
         },
       },
@@ -2595,7 +3031,7 @@ function paintShare() {
   const assets = (tl && tl.assets) || [];
   const cur = (tl && tl.current) || {};
   const donutItems = assets
-    .map((a, i) => ({ id: a.id, label: a.label, value: cur[a.id] || 0, color: assetColor(i) }))
+    .map((a, i) => ({ id: a.id, label: a.label, value: cur[a.id] || 0, color: assetColor(i, a.id) }))
     .filter((x) => x.value > 0 && x.id !== "phuket");
   paintChart("chart-savings", {
     type: "doughnut",
@@ -2631,7 +3067,8 @@ function paintShare() {
       `<div class="share-row"><span>Наличные</span><b>${money(liq.cash || 0)}</b></div>` +
       `<div class="share-row"><span>Золото${gPrice ? ` · ${gGrams} × ${gPrice}` : ""}</span><b>${money(liq.gold || 0)}</b></div>` +
       `<div class="share-row"><span>Накопления Маша</span><b>${money(liq.masha || 0)}</b></div>` +
-      `<div class="share-row"><span>Накопления Саша</span><b>${money(liq.sasha || 0)}</b></div>`;
+      `<div class="share-row"><span>Накопления Саша</span><b>${money(liq.sasha || 0)}</b></div>` +
+      `<div class="share-row"><span>Саша инвестиции · ОФЗ${liq.ofz_ytm ? ` · ${(Number(liq.ofz_ytm) * 100).toFixed(1)}%` : ""}</span><b>${money(liq.sasha_invest || 0)}</b></div>`;
   }
 
   const props = data.property || (tl && tl.property_shares) || [];

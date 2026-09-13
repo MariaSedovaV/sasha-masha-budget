@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -38,6 +40,81 @@ FACT_CASH_BAL_ROW = 16
 FACT_CASH_FLOW_ROW = 21
 FACT_SASHA_INV_BAL_ROW = 18
 FACT_SASHA_INV_FLOW_ROW = 23
+# На плане те же статьи — старт в кол. B, потоки сразу в месячных колонках
+PLAN_MASHA_ROW = 14
+PLAN_SASHA_ROW = 15
+PLAN_CASH_ROW = 16
+PLAN_SASHA_INV_ROW = 18
+
+
+SNAPSHOT_ANALYTICS = Path(__file__).resolve().parent.parent / "static" / "snapshot" / "analytics.json"
+
+
+def series_has_values(vals) -> bool:
+    return any(v is not None and abs(float(v or 0)) > 0.5 for v in (vals or []))
+
+
+def _load_snapshot() -> dict | None:
+    if not SNAPSHOT_ANALYTICS.exists():
+        return None
+    try:
+        return json.loads(SNAPSHOT_ANALYTICS.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _mln_to_rub(v):
+    if v is None:
+        return None
+    try:
+        return float(v) * 1e6
+    except (TypeError, ValueError):
+        return None
+
+
+def _horizon_from_snapshot(kind: str) -> dict | None:
+    snap = _load_snapshot()
+    if not snap:
+        return None
+    hz = snap.get("fcf_horizon") or {}
+    labels = list(hz.get("labels") or [])
+    series_key = "series_plan" if kind == "plan" else "series_fact"
+    monthly_key = "series_fcf_plan" if kind == "plan" else "series_fcf_fact"
+    series = list(hz.get(series_key) or [])
+    monthly_src = list(hz.get(monthly_key) or [])
+    if kind == "fact":
+        labels = labels[:12]
+        series = series[:12]
+        monthly_src = monthly_src[:12]
+    if not series or not series_has_values(series):
+        return None
+    cumul = [_mln_to_rub(v) for v in series]
+    closed = int(snap.get("closed_month") or 0)
+    if kind == "fact" and snap.get("cumul_fact") is not None and 1 <= closed <= len(cumul):
+        cumul[closed - 1] = float(snap["cumul_fact"])
+    if kind == "plan" and snap.get("cumul_plan") is not None and 1 <= closed <= len(cumul):
+        cumul[closed - 1] = float(snap["cumul_plan"])
+    monthly = []
+    for i, val in enumerate(cumul):
+        if i < len(monthly_src) and monthly_src[i] is not None:
+            monthly.append(_mln_to_rub(monthly_src[i]))
+        elif val is None:
+            monthly.append(None)
+        elif i == 0 or cumul[i - 1] is None:
+            monthly.append(val)
+        else:
+            monthly.append(val - cumul[i - 1])
+    out = {
+        "labels": labels or [f"{m:02d}.{BASE_YEAR}" for m in range(1, 13)],
+        "cumul": cumul,
+        "monthly": monthly,
+        "excel": "snapshot",
+    }
+    if kind == "plan":
+        out["end_2027"] = cumul[23] if len(cumul) > 23 else None
+        out["end_2028"] = cumul[35] if len(cumul) > 35 else None
+        out["end_2040"] = cumul[-1] if cumul else None
+    return out
 
 
 def _plan_col(year: int, month: int) -> int:
@@ -48,17 +125,17 @@ def _fact_col(month: int) -> int:
     return 2 + month
 
 
-@lru_cache(maxsize=4)
-def _workbook(path_str: str):
-    return openpyxl.load_workbook(path_str, data_only=True)
+@lru_cache(maxsize=8)
+def _workbook(path_str: str, data_only: bool = True):
+    return openpyxl.load_workbook(path_str, data_only=data_only)
 
 
-def _wb(path: Path | None = None):
+def _wb(path: Path | None = None, data_only: bool = True):
     excel = path or find_excel()
     if not excel or not excel.exists():
         return None, None
     try:
-        return _workbook(str(excel.resolve())), excel
+        return _workbook(str(excel.resolve()), data_only), excel
     except Exception:
         return None, excel
 
@@ -66,73 +143,374 @@ def _wb(path: Path | None = None):
 def read_plan_horizon(path: Path | None = None) -> dict | None:
     """План: кумулятив и месячный ИТОГО за 2026–2040 из листа FCF ПЛАН."""
     wb, excel = _wb(path)
-    if not wb or PLAN_SHEET not in wb.sheetnames:
-        return None
-    ws = wb[PLAN_SHEET]
-    labels, cumul, monthly = [], [], []
-    for year in range(BASE_YEAR, PLAN_END_YEAR + 1):
-        for month in range(1, 13):
-            col = _plan_col(year, month)
-            labels.append(f"{month:02d}.{year}")
-            cumul.append(_num(ws.cell(PLAN_CUMUL_ROW, col).value))
-            monthly.append(_num(ws.cell(PLAN_TOTAL_ROW, col).value))
-    return {
-        "labels": labels,
-        "cumul": cumul,
-        "monthly": monthly,
-        "excel": excel.name if excel else None,
-        "end_2027": cumul[23] if len(cumul) > 23 else None,
-        "end_2028": cumul[35] if len(cumul) > 35 else None,
-        "end_2040": cumul[-1] if cumul else None,
-    }
+    result = None
+    if wb and PLAN_SHEET in wb.sheetnames:
+        ws = wb[PLAN_SHEET]
+        labels, cumul, monthly = [], [], []
+        for year in range(BASE_YEAR, PLAN_END_YEAR + 1):
+            for month in range(1, 13):
+                col = _plan_col(year, month)
+                labels.append(f"{month:02d}.{year}")
+                cumul.append(_num(ws.cell(PLAN_CUMUL_ROW, col).value))
+                monthly.append(_num(ws.cell(PLAN_TOTAL_ROW, col).value))
+        result = {
+            "labels": labels,
+            "cumul": cumul,
+            "monthly": monthly,
+            "excel": excel.name if excel else None,
+            "end_2027": cumul[23] if len(cumul) > 23 else None,
+            "end_2028": cumul[35] if len(cumul) > 35 else None,
+            "end_2040": cumul[-1] if cumul else None,
+        }
+        if series_has_values(cumul):
+            return result
+    return _horizon_from_snapshot("plan") or result
 
 
 def read_fact_cumul_series(path: Path | None = None) -> dict | None:
     """Факт: кумулятив и ИТОГО по месяцам 2026 из листа FCF ФАКТ."""
     wb, excel = _wb(path)
-    if not wb or FACT_SHEET not in wb.sheetnames:
+    result = None
+    if wb and FACT_SHEET in wb.sheetnames:
+        ws = wb[FACT_SHEET]
+        cumul, monthly = [], []
+        for month in range(1, 13):
+            col = _fact_col(month)
+            cumul.append(_num(ws.cell(FACT_CUMUL_ROW, col).value))
+            monthly.append(_num(ws.cell(FACT_TOTAL_ROW, col).value))
+        result = {"cumul": cumul, "monthly": monthly, "excel": excel.name if excel else None}
+        if series_has_values(cumul):
+            return result
+    snap = _horizon_from_snapshot("fact")
+    if snap:
+        return {"cumul": snap["cumul"], "monthly": snap["monthly"], "excel": snap.get("excel")}
+    return result
+
+
+def _iter_ym(start: tuple[int, int], end: tuple[int, int]):
+    y, m = start
+    y1, m1 = end
+    while (y, m) <= (y1, m1):
+        yield y, m
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+
+
+_A1_RE = re.compile(r"\$?([A-Za-z]+)\$?(\d+)")
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _a1(ref: str) -> tuple[int, int] | None:
+    parsed = _col_row(ref)
+    if not parsed:
         return None
-    ws = wb[FACT_SHEET]
-    cumul, monthly = [], []
-    for month in range(1, 13):
-        col = _fact_col(month)
-        cumul.append(_num(ws.cell(FACT_CUMUL_ROW, col).value))
-        monthly.append(_num(ws.cell(FACT_TOTAL_ROW, col).value))
-    return {"cumul": cumul, "monthly": monthly, "excel": excel.name if excel else None}
+    col, row = parsed
+    return row, col
+
+
+def _strip_excel_expr(expr: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch == "'":
+            j = expr.find("'", i + 1)
+            if j < 0:
+                out.append(expr[i:])
+                break
+            out.append(expr[i : j + 1])
+            i = j + 1
+            continue
+        if ch.isspace():
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class _ExcelEval:
+    """Считает формулы FCF, если data_only не сохранил кэш (открытый Excel)."""
+
+    def __init__(self, formulas_wb, values_wb, force_formula: dict[str, set[int]] | None = None):
+        self.formulas = formulas_wb
+        self.values = values_wb
+        self.force_formula = force_formula or {}
+        self.cache: dict[tuple[str, int, int], float] = {}
+
+    def cell(self, sheet: str, row: int, col: int, stack: set | None = None) -> float:
+        key = (sheet, row, col)
+        if key in self.cache:
+            return self.cache[key]
+        stack = stack or set()
+        if key in stack:
+            return 0.0
+        stack.add(key)
+        raw = None
+        cached = None
+        try:
+            raw = self.formulas[sheet].cell(row, col).value
+        except KeyError:
+            self.cache[key] = 0.0
+            return 0.0
+        try:
+            cached = self.values[sheet].cell(row, col).value
+        except KeyError:
+            cached = None
+        force = row in self.force_formula.get(sheet, set())
+        if not force and isinstance(cached, (int, float)):
+            self.cache[key] = float(cached)
+            return self.cache[key]
+        if isinstance(raw, (int, float)):
+            self.cache[key] = float(raw)
+            return self.cache[key]
+        if raw is None or raw == "":
+            if isinstance(cached, (int, float)):
+                self.cache[key] = float(cached)
+                return self.cache[key]
+            self.cache[key] = 0.0
+            return 0.0
+        if isinstance(raw, str) and raw.startswith("="):
+            val = self._expr(sheet, raw[1:], stack)
+            self.cache[key] = val
+            return val
+        self.cache[key] = _num(raw)
+        return self.cache[key]
+
+    def _expr(self, sheet: str, expr: str, stack: set) -> float:
+        tokens = self._tokenize(_strip_excel_expr(expr))
+        return self._eval_tokens(sheet, tokens, stack)
+
+    def _tokenize(self, expr: str) -> list:
+        tokens: list = []
+        i = 0
+        n = len(expr)
+        while i < n:
+            ch = expr[i]
+            if ch in "+-*/()":
+                tokens.append(ch)
+                i += 1
+                continue
+            if ch == "'":
+                j = expr.find("'", i + 1)
+                name = expr[i + 1 : j]
+                i = j + 1
+                if i < n and expr[i] == "!":
+                    i += 1
+                m = _A1_RE.match(expr[i:])
+                if not m:
+                    raise ValueError("sheet ref at " + expr[i:])
+                tokens.append(("sheet", name, m.group(0)))
+                i += len(m.group(0))
+                continue
+            if expr[i : i + 4].upper() == "SUM(":
+                depth = 1
+                j = i + 4
+                while j < n and depth:
+                    if expr[j] == "(":
+                        depth += 1
+                    elif expr[j] == ")":
+                        depth -= 1
+                    j += 1
+                tokens.append(("sum", expr[i + 4 : j - 1]))
+                i = j
+                continue
+            m = _A1_RE.match(expr[i:])
+            if m:
+                tokens.append(("ref", m.group(0)))
+                i += len(m.group(0))
+                continue
+            m = _NUM_RE.match(expr[i:])
+            if m:
+                tokens.append(float(m.group(0)))
+                i += len(m.group(0))
+                continue
+            raise ValueError("cannot parse " + expr[i : i + 40])
+        return tokens
+
+    def _value_tok(self, sheet: str, tok, stack: set) -> float:
+        if isinstance(tok, (int, float)):
+            return float(tok)
+        kind = tok[0]
+        if kind == "ref":
+            parsed = _a1(tok[1])
+            if not parsed:
+                return 0.0
+            r, c = parsed
+            return self.cell(sheet, r, c, stack)
+        if kind == "sheet":
+            parsed = _a1(tok[2])
+            if not parsed:
+                return 0.0
+            r, c = parsed
+            return self.cell(tok[1], r, c, stack)
+        if kind == "sum":
+            inner = tok[1]
+            left, right = inner.split(":")
+            a = _a1(left)
+            b = _a1(right)
+            if not a or not b:
+                return 0.0
+            r1, c1 = a
+            r2, c2 = b
+            total = 0.0
+            for rr in range(min(r1, r2), max(r1, r2) + 1):
+                for cc in range(min(c1, c2), max(c1, c2) + 1):
+                    total += self.cell(sheet, rr, cc, stack)
+            return total
+        raise ValueError(tok)
+
+    def _eval_tokens(self, sheet: str, tokens: list, stack: set) -> float:
+        prec = {"+": 1, "-": 1, "*": 2, "/": 2}
+        out: list = []
+        ops: list = []
+        unary = True
+        for tok in tokens:
+            if tok in ("+", "-") and unary:
+                out.append(0.0)
+                ops.append(tok)
+                unary = False
+                continue
+            if tok == "(":
+                ops.append(tok)
+                unary = True
+                continue
+            if tok == ")":
+                while ops and ops[-1] != "(":
+                    out.append(ops.pop())
+                if ops:
+                    ops.pop()
+                unary = False
+                continue
+            if tok in prec:
+                while ops and ops[-1] in prec and prec[ops[-1]] >= prec[tok]:
+                    out.append(ops.pop())
+                ops.append(tok)
+                unary = True
+                continue
+            out.append(self._value_tok(sheet, tok, stack))
+            unary = False
+        while ops:
+            out.append(ops.pop())
+        st: list[float] = []
+        for item in out:
+            if item in ("+", "-", "*", "/"):
+                b = st.pop()
+                a = st.pop() if st else 0.0
+                if item == "+":
+                    st.append(a + b)
+                elif item == "-":
+                    st.append(a - b)
+                elif item == "*":
+                    st.append(a * b)
+                else:
+                    st.append(a / b if b else 0.0)
+            else:
+                st.append(float(item))
+        return st[0] if st else 0.0
+
+
+def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict | None:
+    """Помесячные остатки: формулы строк 14–18 FCF 2026 ФАКТ (кумулятив), затем план.
+
+    Строки 14–18 в Excel — бегущий итог = старт + потоки слева направо
+    (у Маши в августе ещё минус парковка). data_only часто пустой — считаем формулы.
+    """
+    closed = max(0, min(12, int(closed_month or 0)))
+    formulas_wb, excel = _wb(path, data_only=False)
+    values_wb, _ = _wb(path, data_only=True)
+    if not formulas_wb or FACT_SHEET not in formulas_wb.sheetnames:
+        return None
+    ev = _ExcelEval(
+        formulas_wb,
+        values_wb or formulas_wb,
+        force_formula={
+            FACT_SHEET: {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 49, 50},
+            PLAN_SHEET: {14, 15, 16, 17, 18},
+        },
+    )
+
+    def fact_start(row: int) -> float:
+        return ev.cell(FACT_SHEET, row, 2)
+
+    def fact_balance(row: int, month: int) -> float:
+        return ev.cell(FACT_SHEET, row, _fact_col(month))
+
+    def fact_flow(row: int, month: int) -> float:
+        return ev.cell(FACT_SHEET, row, _fact_col(month))
+
+    def plan_flow(row: int, year: int, month: int) -> float:
+        if PLAN_SHEET not in formulas_wb.sheetnames or year < BASE_YEAR:
+            return 0.0
+        return ev.cell(PLAN_SHEET, row, _plan_col(year, month))
+
+    def path_from_balance(bal_row: int, plan_row: int) -> dict[tuple[int, int], float]:
+        start = fact_start(bal_row)
+        out: dict[tuple[int, int], float] = {(2025, 12): start}
+        for month in range(1, 13):
+            out[(BASE_YEAR, month)] = fact_balance(bal_row, month)
+        last = out[(BASE_YEAR, 12)]
+        extra = 0.0
+        for year, month in _iter_ym((BASE_YEAR + 1, 1), (PLAN_END_YEAR, 12)):
+            extra += plan_flow(plan_row, year, month)
+            out[(year, month)] = last + extra
+        return out
+
+    def flows_2026(flow_row: int, plan_row: int) -> dict[tuple[int, int], float]:
+        out: dict[tuple[int, int], float] = {}
+        for month in range(1, 13):
+            out[(BASE_YEAR, month)] = fact_flow(flow_row, month)
+        for year, month in _iter_ym((BASE_YEAR + 1, 1), (PLAN_END_YEAR, 12)):
+            out[(year, month)] = plan_flow(plan_row, year, month)
+        return out
+
+    masha = path_from_balance(FACT_MASHA_BAL_ROW, PLAN_MASHA_ROW)
+    sasha_sav = path_from_balance(FACT_SASHA_BAL_ROW, PLAN_SASHA_ROW)
+    sasha_inv_nominal = path_from_balance(FACT_SASHA_INV_BAL_ROW, PLAN_SASHA_INV_ROW)
+    cash = path_from_balance(FACT_CASH_BAL_ROW, PLAN_CASH_ROW)
+    masha_flows = flows_2026(FACT_MASHA_FLOW_ROW, PLAN_MASHA_ROW)
+    sasha_flows = flows_2026(FACT_SASHA_FLOW_ROW, PLAN_SASHA_ROW)
+    cash_flows = flows_2026(FACT_CASH_FLOW_ROW, PLAN_CASH_ROW)
+    inv_flows = flows_2026(FACT_SASHA_INV_FLOW_ROW, PLAN_SASHA_INV_ROW)
+    return {
+        "masha": masha,
+        "sasha_savings": sasha_sav,
+        "sasha_invest": sasha_inv_nominal,
+        "sasha": sasha_sav,
+        "cash": cash,
+        "masha_flows": masha_flows,
+        "sasha_flows": sasha_flows,
+        "cash_flows": cash_flows,
+        "sasha_invest_flows": inv_flows,
+        "sasha_invest_start": fact_start(FACT_SASHA_INV_BAL_ROW),
+        "excel": excel.name if excel else None,
+        "closed_month": closed,
+        "method": "excel_formulas_cumulative",
+    }
 
 
 def read_savings_balances(closed_month: int, path: Path | None = None) -> dict | None:
-    """Ликвидные позиции = старт (кол. B) + сумма месячных потоков.
-
-    Маша накопления: стр. 13/18 (без вычета парковки из формулы августа).
-    Саша накопления: стр. 14/19 + Саша инвестиции 17/22 (как в «Разделение_деньги»).
-    Наличные: Доллары дома стр. 15/20.
-    """
-    wb, excel = _wb(path)
-    if not wb or FACT_SHEET not in wb.sheetnames:
+    """Снимок на закрытый месяц: старт + сумма факт-потоков по строке."""
+    paths = read_savings_month_ends(closed_month, path)
+    if not paths:
         return None
-    ws = wb[FACT_SHEET]
+    closed = max(0, min(12, int(closed_month or 0)))
+    key = (2026, closed) if closed else (2025, 12)
 
-    def start_plus_flows(bal_row: int, flow_row: int) -> float:
-        start = _num(ws.cell(bal_row, 2).value)
-        flows = sum(
-            _num(ws.cell(flow_row, _fact_col(m)).value)
-            for m in range(1, closed_month + 1)
-        )
-        return start + flows
+    def at(name: str) -> float:
+        return float((paths.get(name) or {}).get(key, 0.0))
 
-    masha = start_plus_flows(FACT_MASHA_BAL_ROW, FACT_MASHA_FLOW_ROW)
-    sasha_sav = start_plus_flows(FACT_SASHA_BAL_ROW, FACT_SASHA_FLOW_ROW)
-    sasha_inv = start_plus_flows(FACT_SASHA_INV_BAL_ROW, FACT_SASHA_INV_FLOW_ROW)
-    cash = start_plus_flows(FACT_CASH_BAL_ROW, FACT_CASH_FLOW_ROW)
     return {
-        "masha": masha,
-        "sasha": sasha_sav + sasha_inv,
-        "sasha_savings": sasha_sav,
-        "sasha_invest": sasha_inv,
-        "cash": cash,
-        "excel": excel.name if excel else None,
-        "method": "start_plus_flows",
+        "masha": at("masha"),
+        "sasha": at("sasha"),
+        "sasha_savings": at("sasha_savings"),
+        "sasha_invest": at("sasha_invest"),
+        "cash": at("cash"),
+        "excel": paths.get("excel"),
+        "closed_month": closed,
+        "method": "excel_formulas_cumulative",
     }
 
 

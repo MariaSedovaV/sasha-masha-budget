@@ -38,6 +38,30 @@ def _sum(rows, months, cats, field) -> float:
     return sum(r[field] for r in rows if r["month"] in months and r["category"] in cats)
 
 
+def _reconcile_plan_flows(series_plan, series_income_plan, series_expense_plan, series_fcf_plan) -> None:
+    """Месячные доходы/расходы/FCF должны сходиться с шагом CFCF (Excel-кумулятив)."""
+    prev = None
+    for i, cumul in enumerate(series_plan):
+        monthly = None
+        if cumul is not None and prev is not None:
+            monthly = round(float(cumul) - float(prev), 2)
+        if cumul is not None:
+            prev = float(cumul)
+        if monthly is None:
+            continue
+        inc = float(series_income_plan[i] or 0)
+        exp = float(series_expense_plan[i] or 0)
+        led_fcf = inc + exp
+        stored = series_fcf_plan[i]
+        if stored is not None and abs(float(stored) - monthly) <= 0.35 and abs(led_fcf - monthly) <= 0.35:
+            continue
+        series_fcf_plan[i] = monthly
+        if monthly < led_fcf - 0.35:
+            series_expense_plan[i] = round(monthly - inc, 2)
+        elif monthly > led_fcf + 0.35:
+            series_income_plan[i] = round(monthly - exp, 2)
+
+
 def _month_net(rows, month: int, field: str, *, core_income: bool = False) -> float:
     """Доходы − расходы. core_income=True — как строка ИТОГО в Excel (без займов/подарков)."""
     def ok_inc(r):
@@ -193,15 +217,23 @@ def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_
             series_fcf_fact.append(None)
 
         th = thailand_plan_by_ym.get((year, month), 0)
-        if th >= 1_000_000:
+        prev_cfcf = series_plan[-2] if len(series_plan) >= 2 else None
+        cur_cfcf = series_plan[-1] if series_plan else None
+        cfcf_drop = 0.0
+        if prev_cfcf is not None and cur_cfcf is not None:
+            cfcf_drop = (float(prev_cfcf) - float(cur_cfcf)) * 1e6
+        thai_final = year == 2028 and month == 8 and cfcf_drop >= 3_000_000
+        if th >= 1_000_000 or thai_final:
             trophy = year == 2028
+            amt = th if th >= 1_000_000 else cfcf_drop
+            mark = cur_cfcf
             events.append(
                 {
                     "index": i,
-                    "label": "Квартира Таиланд" if trophy else "Платёж Таиланд",
-                    "detail": _mln(th) if trophy else f"план {th / 1e6:.2f} млн ₽",
+                    "label": "Готовность квартиры Пхукет" if trophy else "Платёж Таиланд",
+                    "detail": _mln(amt) if trophy else f"план {th / 1e6:.2f} млн ₽",
                     "tone": "gold",
-                    "value": series_plan[-1],
+                    "value": mark,
                     "category": "Квартира Тайланд",
                     "auto_key": f"auto:thailand:{year}:{month}",
                     **_cal_fields(year, month),
@@ -276,6 +308,8 @@ def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_
                         **_cal_fields(year, month),
                     }
                 )
+
+    _reconcile_plan_flows(series_plan, series_income_plan, series_expense_plan, series_fcf_plan)
 
     seen = set()
     uniq = []

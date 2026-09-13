@@ -109,6 +109,40 @@ def _gold() -> dict | None:
     return None
 
 
+def _ofz_ytm() -> dict | None:
+    """Доходность индекса ОФЗ RGBI (YIELD), доля (0.155 = 15,5%)."""
+    start = (datetime.now() - timedelta(days=21)).strftime("%Y-%m-%d")
+    url = (
+        "https://iss.moex.com/iss/history/engines/stock/markets/index/securities/RGBI.json"
+        f"?iss.meta=off&from={start}"
+    )
+    data = json.loads(_get(url).decode("utf-8"))
+    hist = data.get("history") or {}
+    cols = hist.get("columns") or []
+    rows = hist.get("data") or []
+    if not rows or "YIELD" not in cols:
+        return None
+    rec = dict(zip(cols, rows[-1]))
+    y = rec.get("YIELD")
+    if y is None:
+        return None
+    y = float(y)
+    if y > 1:
+        y = y / 100.0
+    if not (0.02 <= y <= 0.40):
+        return None
+    return {
+        "value": y,
+        "percent": round(y * 100, 2),
+        "name": "RGBI",
+        "as_of": rec.get("TRADEDATE"),
+    }
+
+
+def _ofz_fallback() -> dict:
+    return {"value": 0.155, "percent": 15.5, "name": "RGBI", "fallback": True}
+
+
 def _fallback_gold() -> dict:
     """Запасная учётная цена, если XML металлов ЦБ недоступен."""
     return {"date": None, "value": 12240.0, "unit": "руб. за грамм", "fallback": True}
@@ -126,6 +160,11 @@ def fetch_markets(force: bool = False) -> dict:
         if time.time() - cached.get("fetched_at", 0) < TTL_SEC:
             cached["cached"] = True
             cached["error"] = None
+            if not cached.get("ofz_ytm"):
+                try:
+                    cached["ofz_ytm"] = _ofz_ytm() or _ofz_fallback()
+                except Exception:
+                    cached["ofz_ytm"] = _ofz_fallback()
             return cached
 
     payload = {
@@ -151,6 +190,11 @@ def fetch_markets(force: bool = False) -> dict:
         payload["gold_gram"] = _fallback_gold()
         extra = f"Золото: {exc}"
         payload["error"] = f"{payload['error']}; {extra}" if payload["error"] else extra
+
+    try:
+        payload["ofz_ytm"] = _ofz_ytm() or _ofz_fallback()
+    except Exception:
+        payload["ofz_ytm"] = _ofz_fallback()
 
     if payload.get("usd"):
         if payload.get("gold_gram") and payload["gold_gram"].get("value"):
