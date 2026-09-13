@@ -292,16 +292,20 @@ html.assist-open,html.assist-open body{overflow:hidden}
 
 
   const BRAIN_V = "3";
-  function brainSrc() {
+  const MIC_V = "1";
+  function familySrc(file, ver) {
     const host = location.hostname;
     const path = location.pathname;
     if (host === "127.0.0.1" || host === "localhost") {
-      if (path.includes("/remont")) return "../butler-brain.js?v=" + BRAIN_V;
-      if (path.includes("Экосистема")) return "butler-brain.js?v=" + BRAIN_V;
+      if (path.includes("/remont")) return "../" + file + "?v=" + ver;
+      if (path.includes("Экосистема")) return file + "?v=" + ver;
     }
-    if (/\/sasha-masha\/remont\/?/.test(path)) return "../butler-brain.js?v=" + BRAIN_V;
-    if (/\/sasha-masha\/?(index\.html)?$/.test(path)) return "butler-brain.js?v=" + BRAIN_V;
-    return HOME + "butler-brain.js?v=" + BRAIN_V;
+    if (/\/sasha-masha\/remont\/?/.test(path)) return "../" + file + "?v=" + ver;
+    if (/\/sasha-masha\/?(index\.html)?$/.test(path)) return file + "?v=" + ver;
+    return HOME + file + "?v=" + ver;
+  }
+  function brainSrc() {
+    return familySrc("butler-brain.js", BRAIN_V);
   }
   function loadBrain() {
     if (window.SashaButler) return Promise.resolve(window.SashaButler);
@@ -309,6 +313,16 @@ html.assist-open,html.assist-open body{overflow:hidden}
       const s = document.createElement("script");
       s.src = brainSrc();
       s.onload = () => resolve(window.SashaButler || null);
+      s.onerror = () => resolve(null);
+      document.head.appendChild(s);
+    });
+  }
+  function loadMic() {
+    if (window.SashaMic) return Promise.resolve(window.SashaMic);
+    return new Promise((resolve) => {
+      const s = document.createElement("script");
+      s.src = familySrc("voice-mic.js", MIC_V);
+      s.onload = () => resolve(window.SashaMic || null);
       s.onerror = () => resolve(null);
       document.head.appendChild(s);
     });
@@ -337,6 +351,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
     const closeBtn = document.getElementById("assist-close");
     if (!panel || !form) return;
     loadBrain().then((brain) => brain?.attach?.());
+    loadMic();
 
     function fitSheet() {
       const open = !panel.hidden && !panel.classList.contains("hidden");
@@ -431,15 +446,8 @@ html.assist-open,html.assist-open body{overflow:hidden}
       mic.textContent = "Зажать и говорить";
       try { rec && rec.stop(); } catch {}
     }
-    function startListen() {
-      if (!SpeechAPI) {
-        addMsg("bot", "Голос в этом браузере недоступен. Напишите командой — или откройте Chrome.");
-        return;
-      }
-      holding = true;
-      buffer = "";
-      mic.classList.add("holding");
-      mic.textContent = "Слушаю…";
+    function bindRec() {
+      if (rec || !SpeechAPI) return rec;
       rec = new SpeechAPI();
       rec.lang = "ru-RU";
       rec.interimResults = true;
@@ -450,7 +458,13 @@ html.assist-open,html.assist-open body{overflow:hidden}
         buffer = out.trim();
         input.value = buffer;
       };
-      rec.onerror = () => stopListen();
+      rec.onerror = (event) => {
+        if (event.error === "not-allowed") {
+          try { window.SashaMic?.forget?.(); } catch {}
+          addMsg("bot", "Разрешите микрофон один раз — дальше браузер запомнит. Значок замка в адресной строке → Микрофон → Разрешить.");
+        }
+        stopListen();
+      };
       rec.onend = () => {
         mic.classList.remove("holding");
         mic.textContent = "Зажать и говорить";
@@ -461,6 +475,19 @@ html.assist-open,html.assist-open body{overflow:hidden}
           run(said, true);
         }
       };
+      return rec;
+    }
+    function startListen() {
+      if (!SpeechAPI) {
+        addMsg("bot", "Голос в этом браузере недоступен. Напишите командой — или откройте Chrome.");
+        return;
+      }
+      holding = true;
+      buffer = "";
+      mic.classList.add("holding");
+      mic.textContent = "Слушаю…";
+      try { window.SashaMic?.unlock?.(); } catch {}
+      bindRec();
       try { rec.start(); } catch { stopListen(); }
     }
     mic.addEventListener("pointerdown", (e) => {
