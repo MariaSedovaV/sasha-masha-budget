@@ -1,8 +1,8 @@
 """Динамика активов: ликвидность из FCF 2026 ФАКТ + недвижимость по рынку.
 
 - Золото: 100 г с апреля 2025 × учётная цена ЦБ
-- Наличные, накопления Маша/Саша: кумулятив строк FCF 2026 ФАКТ
-- Саша инвестиции: отдельно, ОФЗ с оценкой по YTM до ноября 2026
+- Наличные, накопления Маша/Саша: старт + помесячные потоки FCF 2026 ФАКТ, не ниже нуля
+- Саша инвестиции: отдельно, ОФЗ с оценкой по YTM до октября 2026; с ноября ряд скрыт
 - Петербург: квартира 18,5 млн с мая 2024 (котлован), ключи сен 2026; паркинг отдельно
 - Пхукет: старт строительства март 2026, ключи Q3 2028, без курсовой просадки
 - Горизонт: май 2024 — декабрь 2040, помесячно
@@ -11,7 +11,12 @@
 from __future__ import annotations
 
 from .categories import START_CAPITAL
-from .excel_fcf import read_fact_cumul_series, read_savings_balances, read_savings_month_ends
+from .excel_fcf import (
+    read_encumbrance_schedule,
+    read_fact_cumul_series,
+    read_savings_balances,
+    read_savings_month_ends,
+)
 
 HORIZON_END = 2040
 YEARS = list(range(2024, HORIZON_END + 1))
@@ -33,7 +38,9 @@ MASHA_FROM = (2025, 12)
 SASHA_FROM = (2025, 12)
 SASHA_INV_FROM = (2025, 12)
 OFZ_YTM_DEFAULT = 0.155
-OFZ_FORECAST_UNTIL = (2026, 11)
+OFZ_FORECAST_UNTIL = (2026, 10)
+OFZ_HIDE_FROM = (2026, 11)
+COMPOSE_PHUKET_FROM = 2029
 
 MONTHS_FROM = (2024, 5)
 
@@ -176,8 +183,8 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
     balances = read_savings_balances(closed_month)
     gold = GOLD_GRAMS * gold_price
     if balances:
-        masha = float(balances["masha"] or 0.0)
-        sasha = float(balances["sasha"] or 0.0)
+        masha = max(0.0, float(balances["masha"] or 0.0))
+        sasha = max(0.0, float(balances["sasha"] or 0.0))
         cash = max(0.0, balances.get("cash", 0.0))
         sasha_invest = float(balances.get("sasha_invest") or 0.0)
     else:
@@ -316,7 +323,7 @@ def ofz_market_path(
     accrue_until: tuple[int, int] = OFZ_FORECAST_UNTIL,
     end: tuple[int, int] = (HORIZON_END, 12),
 ) -> dict[tuple[int, int], float]:
-    """Номинал ОФЗ + помесячный пересчёт цены по YTM до ноября 2026, затем поток плана."""
+    """Номинал ОФЗ + помесячный пересчёт цены по YTM до октября 2026, затем поток плана."""
     flows = flows or {}
     value = float(start or 0.0)
     out: dict[tuple[int, int], float] = {(2025, 12): value}
@@ -402,6 +409,19 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         park_s.append(spb_park_at(year, month))
         phuket_s.append(phuket_equity_at(year, month))
 
+    ofz_last = 0.0
+    ofz_to_masha = 0.0
+    for i, (year, month) in enumerate(months):
+        if (year, month) < OFZ_HIDE_FROM:
+            if ofz_s[i] is not None:
+                ofz_last = float(ofz_s[i])
+            continue
+        if ofz_to_masha <= 0 and ofz_last:
+            ofz_to_masha = ofz_last
+        ofz_s[i] = None
+        if masha_s[i] is not None:
+            masha_s[i] = float(masha_s[i]) + ofz_to_masha
+
     def rnd_series(series):
         return [None if v is None else round(v) for v in series]
 
@@ -414,7 +434,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "from_year": MASHA_FROM[0],
             "from_month": MASHA_FROM[1],
             "series": rnd_series(masha_s),
-            "note": "кумулятив FCF 2026 ФАКТ, строка «Маша накопления»",
+            "note": "кумулятив FCF 2026 ФАКТ, строка «Маша накопления»; с прогноза — плюс нераспределённый FCF месяца",
         },
         {
             "id": "sasha",
@@ -434,8 +454,8 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "series": rnd_series(ofz_s),
             "note": (
                 f"ОФЗ · старт {ofz_start/1e6:.2f} млн ₽ · "
-                f"оценка по {ofz_src} {ofz_ytm*100:.1f}% до ноября 2026 · "
-                f"продажа 1,2 млн ₽ в ноябре по плану"
+                f"оценка по {ofz_src} {ofz_ytm*100:.1f}% до октября 2026 · "
+                f"с ноября 2026 ряд скрыт, остаток в накоплениях Маша"
             ),
         },
         {
@@ -545,6 +565,52 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
     thb_m[now_index] = float(thb[2026])
     gold_m[now_index] = float(gold_px[2026])
 
+    enc_sched = read_encumbrance_schedule()
+
+    def remaining_encumbrance(after_year: int, after_month: int) -> dict:
+        thai = 0.0
+        mort = 0.0
+        for row in enc_sched:
+            if (int(row["year"]), int(row["month"])) > (after_year, after_month):
+                thai += float(row.get("thai") or 0.0)
+                mort += float(row.get("mortgage") or 0.0)
+        return {
+            "thai": round(thai),
+            "mortgage": round(mort),
+            "total": round(thai + mort),
+        }
+
+    def parts_at(index: int, year: int) -> dict[str, float]:
+        out = {}
+        for a in assets:
+            val = a["series"][index]
+            amount = 0.0 if val is None else float(val)
+            if a["id"] == "phuket" and year < COMPOSE_PHUKET_FROM:
+                amount = 0.0
+            out[a["id"]] = round(amount)
+        return out
+
+    composition_years = [y for y in YEARS if y >= FACT_UNTIL]
+    composition = {"years": composition_years, "phuket_from": COMPOSE_PHUKET_FROM, "by_year": {}}
+    for year in composition_years:
+        if year == FACT_UNTIL:
+            idx = now_index
+            as_of = (FACT_UNTIL, closed_month)
+        else:
+            idx = next((i for i, (y, m) in enumerate(months) if y == year and m == 12), now_index)
+            as_of = (year, 12)
+        parts = parts_at(idx, year)
+        total = sum(parts.values())
+        enc = remaining_encumbrance(*as_of)
+        composition["by_year"][str(year)] = {
+            "as_of_year": as_of[0],
+            "as_of_month": as_of[1],
+            "parts": parts,
+            "total": round(total),
+            "encumbrance": enc,
+            "total_after_encumbrance": round(max(0.0, total - enc["total"])),
+        }
+
     return {
         "years": YEARS,
         "labels": labels,
@@ -590,16 +656,19 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
                 "phuket": 0,
             },
         },
+        "composition": composition,
+        "encumbrance_schedule": enc_sched,
         "assumptions": [
             f"Золото: куплено в апреле 2025, {GOLD_GRAMS:.0f} г × цена ЦБ на закрытый месяц ({gold_px[2026]:,.0f} ₽/г).",
-            "Наличные («Доллары дома»), накопления Маша и накопления Саша: кумулятив строк 14–16 FCF 2026 ФАКТ (старт в кол. B плюс месячные потоки; у Маши в августе минус парковка). С сентября 2026 — формулы факта, которые тянут FCF ПЛАН. С 2027 — потоки плана от декабря 2026.",
+            "Наличные («Доллары дома»), накопления Маша и Саша: старт 2026 плюс помесячные потоки строк FCF 2026 ФАКТ. Остаток не ниже нуля. С прогноза (после закрытого месяца) нераспределённый FCF месяца — в накопления Маша. С 2027 — потоки FCF ПЛАН плюс тот же остаток.",
             (
                 f"Саша инвестиции — отдельно: ОФЗ, старт {ofz_start/1e6:.2f} млн ₽. "
-                f"Цена до ноября 2026 — помесячно по доходности {ofz_src} {ofz_ytm*100:.1f}% годовых "
-                f"(купон/переоценка). В ноябре 2026 — продажа 1,2 млн ₽ по плану, остаток без дальнейшей переоценки."
+                f"Цена до октября 2026 — помесячно по доходности {ofz_src} {ofz_ytm*100:.1f}% годовых. "
+                f"С ноября 2026 ряд на графике не показывается; остаток учтён в накоплениях Маша."
             ),
             "Куинджи, квартира: 18,5 млн ₽ в мае 2024 (котлован). Ввод — август 2026, ключи — сентябрь 2026. Паркинг 1,45 млн ₽ — отдельный ряд. С 2031: +3,5% и +3% годовых.",
-            f"Пхукет: старт строительства март 2026, контракт {THAI_BUY/1e6:.2f} млн ₽; ключи и полная оплата — Q3 2028. Оценка в рублях контракта по стройке, без краткосрочного курса бата (он давал ложную просадку сразу после покупки). В «Сейчас» не входит до сдачи. С 2031 — +4% годовых.",
+            f"Пхукет: старт строительства март 2026, контракт {THAI_BUY/1e6:.2f} млн ₽; ключи и полная оплата — Q3 2028. Оценка в рублях контракта по стройке, без краткосрочного курса бата (он давал ложную просадку сразу после покупки). В «Состав» входит с 2029. На графике портфеля — с марта 2026. С 2031 — +4% годовых.",
+            "Обременение: будущие платежи по Таиланду (до 2028) и ипотеке (последний платёж в 2030) относительно выбранного периода состава.",
             "USD: 2026 — курс ЦБ; к 2030 сценарий 94 ₽; далее +2 ₽/год. Это сценарий, не прогноз ЦБ.",
             f"2027–{HORIZON_END} — сценарий, не инвестсовет.",
         ],

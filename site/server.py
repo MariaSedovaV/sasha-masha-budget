@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+import sqlite3
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,6 +74,8 @@ def _seed_if_needed(conn) -> None:
             set_meta(conn, "structure_ok", "0")
             set_meta(conn, "structure_error", str(exc))
             conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
 def _health_payload(conn) -> dict:

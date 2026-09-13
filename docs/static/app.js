@@ -58,6 +58,9 @@ let state = {
   share: null,
   showDrivers: false,
   shareBound: false,
+  composeYear: 2026,
+  composeEncumbrance: false,
+  assumptionsBound: false,
   fcfTimelineBound: false,
   assetTimelineBound: false,
   chartExpandBound: false,
@@ -124,7 +127,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "63";
+const SNAPSHOT_VER = "83";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -238,11 +241,14 @@ async function api(path, opts) {
   if (!opts || !opts.method || opts.method === "GET") {
     urls.push("static/snapshot/" + name + ".json?v=" + SNAPSHOT_VER + "&d=" + new Date().toISOString().slice(0, 10));
   }
+  const slow = /\/(share|analytics|markets)\b/.test(path);
+  const timeoutMs = (opts && opts.method && opts.method !== "GET") ? 60000 : (slow ? 120000 : 8000);
   let last = new Error("Нет данных: " + path);
   for (const url of urls) {
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), (opts && opts.method && opts.method !== "GET") ? 60000 : 8000);
+      const wait = url.startsWith("/api/") ? timeoutMs : 8000;
+      const timer = setTimeout(() => ctrl.abort(), wait);
       const res = await fetch(url, {
         ...opts,
         signal: ctrl.signal,
@@ -288,6 +294,23 @@ async function boot() {
     Object.keys(charts || {}).forEach((id) => {
       const chart = charts[id];
       if (chart && typeof chart.resize === "function") chart.resize();
+    });
+    clearTimeout(composeResizeTimer);
+    composeResizeTimer = setTimeout(() => {
+      const shareView = $("view-share");
+      if (state.share && shareView && !shareView.classList.contains("hidden")) {
+        paintComposeDonut(state.share, state.share.timeline);
+      }
+    }, 140);
+  });
+  ["(max-width: 1200px)", "(max-width: 860px)"].forEach((query) => {
+    const mq = window.matchMedia(query);
+    if (!mq || !mq.addEventListener) return;
+    mq.addEventListener("change", () => {
+      const shareView = $("view-share");
+      if (state.share && shareView && !shareView.classList.contains("hidden")) {
+        paintComposeDonut(state.share, state.share.timeline);
+      }
     });
   });
   $("theme-toggle").addEventListener("click", () => {
@@ -500,7 +523,10 @@ function bindTimeline(kind) {
   box.innerHTML = `
     <div class="fcf-timeline-head">
       <span class="year-picks-label">Горизонт</span>
-      <span class="fcf-timeline-range" id="${p}-range-label"></span>
+      <span class="fcf-timeline-range-wrap">
+        <span class="fcf-timeline-range" id="${p}-range-label"></span>
+        ${kind === "asset" ? `<button type="button" class="info-chip" id="asset-assumptions-btn" aria-label="Допущения и источники">i</button>` : ""}
+      </span>
     </div>
     <div class="fcf-slider" id="${p}-slider">
       <div class="fcf-track" id="${p}-track">
@@ -1084,6 +1110,7 @@ async function saveRule(e) {
 }
 
 let charts = {};
+let composeResizeTimer = 0;
 function paintChart(id, config) {
   if (!charts || typeof charts !== "object") charts = {};
   if (charts[id]) charts[id].destroy();
@@ -1192,8 +1219,8 @@ function isQuarterIndex(labels, i) {
 
 function xAxisMonthQuarter(labels) {
   const light = currentTheme() === "light";
-  const month = light ? "rgba(28,25,21,0.035)" : "rgba(239,232,220,0.02)";
-  const quarter = light ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)";
+  const month = light ? "rgba(28,25,21,0.05)" : "rgba(239,232,220,0.035)";
+  const quarter = light ? "rgba(28,25,21,0.09)" : "rgba(239,232,220,0.06)";
   const dense = (labels || []).length > 18;
   return {
     grid: {
@@ -1572,6 +1599,200 @@ const fcfCrosshairPlugin = {
     ctx.lineWidth = 1.4;
     ctx.strokeStyle = cssVar("--bg");
     ctx.stroke();
+    ctx.restore();
+  },
+};
+
+const COMPOSE_SHORT = {
+  cash: "Наличные",
+  masha: "Маша",
+  sasha: "Саша",
+  sasha_invest: "ОФЗ",
+  gold: "Золото",
+  spb: "Петербург",
+  parking: "Паркинг",
+  phuket: "Пхукет",
+};
+
+function hexAlpha(hex, a) {
+  const h = String(hex || "").replace("#", "");
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  if (![r, g, b].every(Number.isFinite)) return hex;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function arrangeCallouts(items, minY, maxY, gap) {
+  const n = items.length;
+  if (!n) return;
+  items.sort((a, b) => a.yNat - b.yNat);
+  const span = maxY - minY;
+  const need = (n - 1) * gap;
+  if (need >= span) {
+    const step = n === 1 ? 0 : span / (n - 1);
+    items.forEach((it, i) => { it.yLab = minY + i * step; });
+    return;
+  }
+  items.forEach((it) => {
+    it.yLab = Math.max(minY, Math.min(maxY, it.yNat));
+  });
+  for (let pass = 0; pass < 10; pass++) {
+    for (let i = 1; i < n; i++) {
+      if (items[i].yLab - items[i - 1].yLab < gap) {
+        const mid = (items[i].yLab + items[i - 1].yLab) / 2;
+        items[i - 1].yLab = mid - gap / 2;
+        items[i].yLab = mid + gap / 2;
+      }
+    }
+    items[0].yLab = Math.max(minY, items[0].yLab);
+    items[n - 1].yLab = Math.min(maxY, items[n - 1].yLab);
+    for (let i = 1; i < n; i++) {
+      if (items[i].yLab < items[i - 1].yLab + gap) items[i].yLab = items[i - 1].yLab + gap;
+    }
+    for (let i = n - 2; i >= 0; i--) {
+      if (items[i].yLab > items[i + 1].yLab - gap) items[i].yLab = items[i + 1].yLab - gap;
+    }
+  }
+}
+
+const donutCalloutsPlugin = {
+  id: "donutCallouts",
+  afterDatasetsDraw(chart) {
+    const { ctx, chartArea } = chart;
+    if (!chartArea || !chart.data || !chart.data.datasets) return;
+    const ink = cssVar("--ink") || "#efe8dc";
+    const muted = cssVar("--muted") || "#9a9286";
+    const items = [];
+    chart.data.datasets.forEach((ds, di) => {
+      if (ds && ds.skipCallouts) return;
+      const meta = chart.getDatasetMeta(di);
+      if (!meta || !meta.data || meta.hidden) return;
+      const colors = ds.backgroundColor || [];
+      const names = ds.itemLabels || chart.data.labels || [];
+      const total = (ds.data || []).reduce((s, v) => s + (Number(v) > 0 ? Number(v) : 0), 0);
+      if (!total) return;
+      meta.data.forEach((el, i) => {
+        const val = Number(ds.data[i]);
+        if (!el || !Number.isFinite(val) || val <= 0) return;
+        if (!String(names[i] || "").trim()) return;
+        const p = typeof el.getProps === "function"
+          ? el.getProps(["startAngle", "endAngle", "outerRadius", "x", "y"], true)
+          : el;
+        const start = Number(p.startAngle);
+        const end = Number(p.endAngle);
+        const radius = Number(p.outerRadius);
+        const cx = Number(p.x);
+        const cy = Number(p.y);
+        if (![start, end, radius, cx, cy].every(Number.isFinite)) return;
+        const mid = (start + end) / 2;
+        const side = Math.cos(mid) >= 0.02 ? 1 : -1;
+        const stub = Math.min(10, Math.max(6, radius * 0.08));
+        items.push({
+          name: String(names[i] || ""),
+          value: (val / 1e6).toFixed(2).replace(".", ","),
+          color: colors[i],
+          side,
+          x0: cx + Math.cos(mid) * radius,
+          y0: cy + Math.sin(mid) * radius,
+          xStub: cx + Math.cos(mid) * (radius + stub),
+          yNat: cy + Math.sin(mid) * (radius + stub),
+          cx,
+          radius,
+        });
+      });
+    });
+    if (!items.length) return;
+    const maxR = Math.max(...items.map((it) => it.radius));
+    const left = items.filter((it) => it.side < 0);
+    const right = items.filter((it) => it.side > 0);
+    const compact = viewportTier() === "phone" || chart.width < 420;
+    const twoLineFor = (list) => compact || (list.length > 0 && list.length <= 3);
+    const twoLeft = twoLineFor(left);
+    const twoRight = twoLineFor(right);
+    const gapFor = (two) => (two ? 32 : 18);
+    arrangeCallouts(left, chartArea.top + 8, chartArea.bottom - 8, gapFor(twoLeft));
+    arrangeCallouts(right, chartArea.top + 8, chartArea.bottom - 8, gapFor(twoRight));
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    const edge = 10;
+    items.forEach((it) => {
+      const twoLine = it.side < 0 ? twoLeft : twoRight;
+      const valueText = it.value + " млн";
+      ctx.font = "500 10px Montserrat, sans-serif";
+      const nameW = ctx.measureText(it.name).width;
+      ctx.font = "600 11px Montserrat, sans-serif";
+      const valueW = ctx.measureText(valueText).width;
+      const labelW = twoLine ? Math.max(nameW, valueW) : nameW + 6 + valueW;
+      const preferred = it.side > 0 ? it.cx + maxR + 14 : it.cx - maxR - 14;
+      const xLab = it.side > 0
+        ? Math.min(preferred, chart.width - edge - 6 - labelW)
+        : Math.max(preferred, edge + 6 + labelW);
+      ctx.strokeStyle = hexAlpha(it.color, 0.55) || muted;
+      ctx.beginPath();
+      ctx.moveTo(it.x0, it.y0);
+      ctx.lineTo(it.xStub, it.yNat);
+      ctx.lineTo(xLab, it.yLab);
+      ctx.stroke();
+      ctx.textAlign = it.side > 0 ? "left" : "right";
+      ctx.textBaseline = "middle";
+      const tx = it.side > 0 ? xLab + 5 : xLab - 5;
+      if (twoLine) {
+        ctx.fillStyle = muted;
+        ctx.font = "500 10px Montserrat, sans-serif";
+        ctx.fillText(it.name, tx, it.yLab - 7);
+        ctx.fillStyle = ink;
+        ctx.font = "600 11px Montserrat, sans-serif";
+        ctx.fillText(valueText, tx, it.yLab + 7);
+      } else {
+        const namePart = it.name + "  ";
+        if (it.side > 0) {
+          ctx.font = "500 10px Montserrat, sans-serif";
+          ctx.fillStyle = muted;
+          ctx.fillText(namePart, tx, it.yLab);
+          const nw = ctx.measureText(namePart).width;
+          ctx.font = "600 10px Montserrat, sans-serif";
+          ctx.fillStyle = ink;
+          ctx.fillText(valueText, tx + nw, it.yLab);
+        } else {
+          ctx.font = "600 10px Montserrat, sans-serif";
+          ctx.fillStyle = ink;
+          ctx.fillText(valueText, tx, it.yLab);
+          const vw = ctx.measureText(valueText).width;
+          ctx.font = "500 10px Montserrat, sans-serif";
+          ctx.fillStyle = muted;
+          ctx.fillText(it.name, tx - vw - 6, it.yLab);
+        }
+      }
+    });
+    ctx.restore();
+  },
+};
+
+const donutCenterPlugin = {
+  id: "donutCenter",
+  afterDraw(chart) {
+    const opts = (chart.options.plugins && chart.options.plugins.donutCenter) || {};
+    const text = opts.text;
+    if (!text) return;
+    const meta = chart.getDatasetMeta(0);
+    const el = meta && meta.data && meta.data[0];
+    if (!el) return;
+    const { ctx } = chart;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = cssVar("--ink") || "#efe8dc";
+    ctx.font = "700 15px Montserrat, sans-serif";
+    ctx.fillText(text, el.x, el.y - (opts.sub ? 7 : 0));
+    if (opts.sub) {
+      ctx.fillStyle = cssVar("--muted") || "#9a9286";
+      ctx.font = "500 9px Montserrat, sans-serif";
+      ctx.fillText(opts.sub, el.x, el.y + 11);
+    }
     ctx.restore();
   },
 };
@@ -2832,6 +3053,33 @@ function bindShareControls() {
       paintShare();
     });
   }
+  const yearSel = $("compose-year");
+  if (yearSel) {
+    yearSel.addEventListener("change", () => {
+      state.composeYear = Number(yearSel.value) || 2026;
+      paintShare();
+    });
+  }
+  const enc = $("compose-encumbrance");
+  if (enc) {
+    enc.addEventListener("change", () => {
+      state.composeEncumbrance = enc.checked;
+      paintShare();
+    });
+  }
+  const modal = $("assumptions-modal");
+  const close = $("assumptions-modal-close");
+  if (close && modal) {
+    close.addEventListener("click", () => { modal.hidden = true; });
+  }
+}
+
+function bindAssumptionsButton() {
+  const btn = $("asset-assumptions-btn");
+  const modal = $("assumptions-modal");
+  if (!btn || !modal || btn.dataset.bound) return;
+  btn.dataset.bound = "1";
+  btn.addEventListener("click", () => { modal.hidden = false; });
 }
 
 function monthYearFromLabel(lab) {
@@ -2867,7 +3115,7 @@ async function loadShare() {
     if (shareView && !shareView.classList.contains("hidden")) {
       paintShare();
       requestAnimationFrame(() => {
-        ["chart-assets", "chart-savings", "chart-property", "chart-drivers"].forEach((id) => {
+        ["chart-assets", "chart-savings", "chart-drivers"].forEach((id) => {
           if (charts[id]) charts[id].resize();
         });
       });
@@ -2889,6 +3137,10 @@ const ASSET_COLORS = {
   parking: "#c4a574",
   phuket: "#5aadb2",
 };
+const ENC_COLORS = {
+  thai: "#b65d7a",
+  mortgage: "#4a72b0",
+};
 
 function assetColor(i, id) {
   if (id && ASSET_COLORS[id]) return ASSET_COLORS[id];
@@ -2909,26 +3161,11 @@ function paintShare() {
       `<div class="chip-kpi"><b>${mln(k.forecast_2040 != null ? k.forecast_2040 : k.forecast_2030 || 0)}</b><span>Прогноз к 2040</span></div>`,
       `<div class="chip-kpi"><b>${(k.delta_pct >= 0 ? "+" : "") + (k.delta_pct || 0)}%</b><span>+ к 2040</span></div>`,
     ].join("");
-
-    const propKpis = $("share-prop-kpis");
-    if (propKpis) {
-      const props = data.property || tl.property_shares || [];
-      propKpis.innerHTML = props.map((p) => {
-        const shares = (p.shares || []).map((s) => `${s.owner} ${Math.round(s.share * 100)}%`).join(" · ");
-        return `<article class="prop-card">
-          <div class="prop-card-top">
-            <h4>${p.name}</h4>
-            <span class="prop-share">${shares}</span>
-          </div>
-          <p class="prop-note">${p.note || ""}</p>
-          <b class="prop-value">${money(p.value || 0)}</b>
-        </article>`;
-      }).join("");
-    }
   }
 
   if (tl) {
     bindTimeline("asset");
+    bindAssumptionsButton();
     const hover = $("asset-hover");
     if (hover) hover.hidden = true;
     const { from, to } = clampTimelineRange("asset");
@@ -2953,7 +3190,7 @@ function paintShare() {
         label: a.label,
         data: series,
         borderColor: color,
-        backgroundColor: "transparent",
+        backgroundColor: color,
         fill: false,
         tension: 0.25,
         borderWidth: 2,
@@ -2996,6 +3233,7 @@ function paintShare() {
           x: {
             ...scaleOpts().x,
             ...xAxisMonthQuarter(labels),
+            offset: true,
           },
         },
       },
@@ -3078,139 +3316,228 @@ function paintShare() {
       });
     }
 
-    $("share-assumptions").innerHTML = (tl.assumptions || []).map((t) => `<li>${t}</li>`).join("");
-    $("share-sources").innerHTML = (tl.sources || []).map((t) => `<li>${t}</li>`).join("");
+    const assume = $("share-assumptions");
+    const sources = $("share-sources");
+    if (assume) assume.innerHTML = (tl.assumptions || []).map((t) => `<li>${t}</li>`).join("");
+    if (sources) sources.innerHTML = (tl.sources || []).map((t) => `<li>${t}</li>`).join("");
+  }
+
+  paintComposeDonut(data, tl);
+}
+
+function composeSnapshot(tl) {
+  const years = ((tl && tl.composition) || {}).years || [tl && tl.now_year || 2026];
+  let year = Number(state.composeYear) || (tl && tl.now_year) || 2026;
+  if (!years.includes(year)) year = years[0] || year;
+  const row = ((((tl || {}).composition || {}).by_year) || {})[String(year)];
+  if (row) return { year, ...row };
+  const parts = {};
+  ((tl && tl.assets) || []).forEach((a) => {
+    const raw = ((tl.current || {})[a.id]) || 0;
+    parts[a.id] = a.id === "phuket" && year < 2029 ? 0 : raw;
+  });
+  const total = Object.values(parts).reduce((s, v) => s + Number(v || 0), 0);
+  return {
+    year,
+    as_of_year: year,
+    as_of_month: year === (tl && tl.now_year) ? (tl.now_month || 8) : 12,
+    parts,
+    total,
+    encumbrance: { thai: 0, mortgage: 0, total: 0 },
+    total_after_encumbrance: total,
+  };
+}
+
+function composeDonutPad() {
+  const box = document.querySelector(".compose-body > .share-donut");
+  const w = box && box.clientWidth ? box.clientWidth : 520;
+  const h = box && box.clientHeight ? box.clientHeight : 400;
+  const side = Math.max(88, Math.min(158, Math.round(w * 0.26)));
+  const vert = Math.max(14, Math.min(22, Math.round(h * 0.045)));
+  const maxSide = Math.max(72, Math.round((w - 150) / 2));
+  return {
+    top: vert,
+    bottom: vert,
+    left: Math.min(side, maxSide),
+    right: Math.min(Math.round(side * 0.9), maxSide),
+  };
+}
+
+function paintComposeDonut(data, tl) {
+  const snap = composeSnapshot(tl);
+  const years = ((tl && tl.composition) || {}).years || [snap.year];
+  const sel = $("compose-year");
+  if (sel && sel.options.length !== years.length) {
+    sel.innerHTML = years.map((y) => `<option value="${y}">${y}</option>`).join("");
+  }
+  if (sel) sel.value = String(snap.year);
+  state.composeYear = snap.year;
+  const encBox = $("compose-encumbrance");
+  if (encBox) encBox.checked = !!state.composeEncumbrance;
+
+  const nowYear = (tl && tl.now_year) || 2026;
+  const title = $("compose-title");
+  if (title) title.textContent = snap.year === nowYear ? "Состав сейчас" : `Состав ${snap.year}`;
+  const hint = $("compose-hint");
+  if (hint) {
+    const monthLab = `${MONTHS[(snap.as_of_month || 12) - 1]} ${snap.as_of_year}`;
+    hint.textContent = snap.year < 2029
+      ? `${monthLab} · без тайской квартиры`
+      : `${monthLab} · с тайской квартирой`;
   }
 
   const assets = (tl && tl.assets) || [];
-  const cur = (tl && tl.current) || {};
+  const parts = snap.parts || {};
+  const card = cssVar("--card") || "#16181d";
   const donutItems = assets
-    .map((a, i) => ({ id: a.id, label: a.label, value: cur[a.id] || 0, color: assetColor(i, a.id) }))
-    .filter((x) => x.value > 0 && x.id !== "phuket");
-  paintChart("chart-savings", {
-    type: "doughnut",
-    data: {
-      labels: donutItems.length ? donutItems.map((x) => x.label) : ["Нет данных"],
-      datasets: [{
-        data: donutItems.length ? donutItems.map((x) => x.value) : [1],
-        backgroundColor: donutItems.length ? donutItems.map((x) => x.color) : [cssVar("--muted")],
-        borderWidth: 0,
-      }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      cutout: "55%",
-      interaction: chartInteraction(),
-      plugins: {
-        legend: legendOpts({ labels: { boxWidth: 8, font: { size: 10 } } }),
-        tooltip: { enabled: true, callbacks: { label: (ctx) => `${ctx.label}: ${money(ctx.raw)}` } },
-      },
-    },
-  });
+    .map((a, i) => ({
+      id: a.id,
+      label: a.label,
+      short: COMPOSE_SHORT[a.id] || a.label,
+      value: Number(parts[a.id] || 0),
+      color: ASSET_COLORS[a.id] || assetColor(i, a.id),
+    }))
+    .filter((x) => x.value > 0)
+    .sort((a, b) => b.value - a.value);
 
-  const liq = (tl && tl.liquid) || {};
-  const cashBox = $("cash-from-sasha");
-  if (cashBox) {
-    const gPrice = liq.gold_price
-      ? `${Number(liq.gold_price).toLocaleString("ru-RU", { maximumFractionDigits: 0 })} ₽/г`
-      : "";
-    const gGrams = liq.gold_grams != null ? `${liq.gold_grams} г` : "100 г";
-    cashBox.innerHTML =
-      "<h3>Ликвидность</h3>" +
-      `<div class="share-row"><span>Всего</span><b>${money(liq.liquid_total || 0)}</b></div>` +
-      `<div class="share-row"><span>Наличные</span><b>${money(liq.cash || 0)}</b></div>` +
-      `<div class="share-row"><span>Золото${gPrice ? ` · ${gGrams} × ${gPrice}` : ""}</span><b>${money(liq.gold || 0)}</b></div>` +
-      `<div class="share-row"><span>Накопления Маша</span><b>${money(liq.masha || 0)}</b></div>` +
-      `<div class="share-row"><span>Накопления Саша</span><b>${money(liq.sasha || 0)}</b></div>` +
-      `<div class="share-row"><span>Саша инвестиции · ОФЗ${liq.ofz_ytm ? ` · ${(Number(liq.ofz_ytm) * 100).toFixed(1)}%` : ""}</span><b>${money(liq.sasha_invest || 0)}</b></div>`;
+  const encOn = !!state.composeEncumbrance;
+  const enc = snap.encumbrance || {};
+  const thai = Number(enc.thai || 0);
+  const mort = Number(enc.mortgage || 0);
+  const encItems = [
+    thai > 0 && { id: "thai", label: "Таиланд, остаток платежей", short: "Таиланд", value: thai, color: ENC_COLORS.thai },
+    mort > 0 && { id: "mortgage", label: "Ипотека, остаток платежей", short: "Ипотека", value: mort, color: ENC_COLORS.mortgage },
+  ].filter(Boolean);
+  const showEncRing = encOn && encItems.length > 0;
+  const centerVal = encOn ? (snap.total_after_encumbrance || 0) : (snap.total || 0);
+  const centerSub = encOn ? "после платежей" : (snap.year === nowYear ? "сейчас" : String(snap.year));
+  const gross = Number(snap.total || 0) || donutItems.reduce((s, x) => s + x.value, 0);
+  const encTotal = Number(enc.total || 0) || encItems.reduce((s, x) => s + x.value, 0);
+
+  const legendItem = (x, total) => {
+    const pct = total ? Math.round(x.value / total * 100) : 0;
+    return `<span class="compose-legend-item" title="${x.label}">
+      <i class="swatch" style="background:${x.color}"></i>
+      <span class="name">${x.short}</span>
+      <span class="val">${mln(x.value)} <span class="pct">${pct}%</span></span>
+    </span>`;
+  };
+  const legend = $("compose-legend");
+  if (legend) {
+    legend.classList.toggle("split", showEncRing);
+    if (showEncRing) {
+      legend.innerHTML = `
+        <div class="compose-legend-col assets">
+          <div class="compose-legend-title">Стоимость активов</div>
+          <div class="compose-legend-items">${donutItems.map((x) => legendItem(x, gross)).join("")}</div>
+        </div>
+        <div class="compose-legend-rule" aria-hidden="true"></div>
+        <div class="compose-legend-col enc">
+          <div class="compose-legend-title">Обременение</div>
+          <div class="compose-legend-items">${encItems.map((x) => legendItem(x, encTotal)).join("")}</div>
+        </div>`;
+    } else {
+      legend.innerHTML = donutItems.map((x) => legendItem(x, gross)).join("");
+    }
   }
 
-  const props = data.property || (tl && tl.property_shares) || [];
-  const labels = props.map((p) => p.name.replace("Куинджи · ", "").replace("Bangtao · ", ""));
-  const sasha = cssVar("--gold");
-  const masha = cssVar("--l2");
-  const onSasha = cssVar("--on-accent");
-  const onMasha = cssVar("--l2-on");
-  paintChart("chart-property", {
-    type: "bar",
-    plugins: [{
-      id: "barPctLabels",
-      afterDatasetsDraw(chart) {
-        const { ctx } = chart;
-        ctx.save();
-        ctx.font = "600 12px Montserrat, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        chart.data.datasets.forEach((ds, di) => {
-          const meta = chart.getDatasetMeta(di);
-          if (meta.hidden) return;
-          ctx.fillStyle = di === 0 ? onSasha : onMasha;
-          meta.data.forEach((el, i) => {
-            const v = ds.data[i];
-            if (!v) return;
-            const { x, y, base } = el.getProps(["x", "y", "base"], true);
-            ctx.fillText(`${v}%`, x, (y + base) / 2);
-          });
-        });
-        ctx.restore();
-      },
-    }],
-    data: {
-      labels,
-      datasets: [
-        {
-          label: "Саша",
-          data: props.map((p) => {
-            const row = (p.shares || []).find((s) => s.owner === "Саша");
-            return row ? Math.round(row.share * 100) : 0;
-          }),
-          backgroundColor: sasha,
-          borderRadius: 4,
-        },
-        {
-          label: "Маша",
-          data: props.map((p) => {
-            const row = (p.shares || []).find((s) => s.owner === "Маша");
-            return row ? Math.round(row.share * 100) : 0;
-          }),
-          backgroundColor: masha,
-          borderRadius: 4,
-        },
-      ],
-    },
+  const note = $("compose-enc-note");
+  if (note) {
+    if (encOn) {
+      const lines = [];
+      if (encTotal <= 0) {
+        lines.push("На выбранную дату будущих платежей по Таиланду и ипотеке уже нет — цифра в круге совпадает со стоимостью активов.");
+      } else if (centerVal <= 0 && encTotal > gross) {
+        lines.push(`В круге ${mln(centerVal)} вместо ${mln(gross)}: платежи ${mln(encTotal)} больше суммы в круге, поэтому показываем ноль.`);
+      } else {
+        lines.push(`В круге ${mln(centerVal)} вместо ${mln(gross)}: вычтены ещё не прошедшие платежи ${mln(encTotal)}.`);
+      }
+      if (thai > 0) {
+        lines.push(snap.year < 2029
+          ? `Таиланд: осталось ${mln(thai)}, последний платёж в 2028. Сама квартира в круге с 2029.`
+          : `Таиланд: осталось ${mln(thai)}, последний платёж в 2028 году.`);
+      }
+      if (mort > 0) {
+        lines.push(`Ипотека: осталось ${mln(mort)}, последний платёж в марте 2030.`);
+      }
+      note.innerHTML = lines.slice(0, 3).map((t) => `<p>${t}</p>`).join("");
+      note.hidden = false;
+    } else {
+      note.innerHTML = "";
+      note.hidden = true;
+    }
+  }
+
+  const assetDs = {
+    label: "Стоимость активов",
+    data: donutItems.length ? donutItems.map((x) => x.value) : [1],
+    backgroundColor: donutItems.length ? donutItems.map((x) => x.color) : [cssVar("--muted")],
+    itemLabels: donutItems.length ? donutItems.map((x) => x.short) : ["Нет данных"],
+    borderWidth: 1,
+    borderColor: card,
+    hoverOffset: 0,
+    hoverBorderColor: card,
+    weight: showEncRing ? 1.25 : 1,
+  };
+  const encDs = showEncRing ? {
+    label: "Обременение",
+    data: encItems.map((x) => x.value),
+    backgroundColor: encItems.map((x) => x.color),
+    itemLabels: encItems.map((x) => x.short),
+    borderWidth: 2,
+    borderColor: card,
+    hoverOffset: 0,
+    hoverBorderColor: card,
+    weight: 0.95,
+  } : null;
+  const spacerDs = showEncRing ? {
+    data: [1],
+    backgroundColor: ["rgba(0,0,0,0)"],
+    borderWidth: 0,
+    hoverOffset: 0,
+    weight: 0.16,
+    itemLabels: [""],
+    skipCallouts: true,
+  } : null;
+  // Chart.js 4 doughnut: первый dataset — внешнее кольцо.
+  const datasets = showEncRing ? [encDs, spacerDs, assetDs] : [assetDs];
+
+  paintChart("chart-savings", {
+    type: "doughnut",
+    plugins: [donutCalloutsPlugin, donutCenterPlugin],
+    data: { datasets },
     options: {
       maintainAspectRatio: false,
+      cutout: showEncRing ? "44%" : "68%",
+      rotation: -90,
+      clip: false,
+      layout: { padding: composeDonutPad() },
       interaction: chartInteraction(),
       plugins: {
-        legend: legendOpts(),
+        legend: { display: false },
         tooltip: {
           enabled: true,
+          filter: (item) => item && item.dataset && !item.dataset.skipCallouts,
           callbacks: {
+            title: (items) => {
+              const ds = items[0] && datasets[items[0].datasetIndex];
+              return (ds && ds.label) || "";
+            },
             label: (ctx) => {
-              const p = props[ctx.dataIndex];
-              const share = ctx.raw;
-              const val = p ? Math.round((p.value || 0) * share / 100) : 0;
-              return `${ctx.dataset.label}: ${share}% · ${money(val)}`;
+              const ds = datasets[ctx.datasetIndex];
+              const names = (ds && ds.itemLabels) || [];
+              const name = names[ctx.dataIndex] || ctx.label || "";
+              return `${name}: ${money(ctx.raw)}`;
             },
           },
         },
-      },
-      scales: {
-        x: { stacked: true, grid: { display: false } },
-        y: {
-          stacked: true,
-          min: 0,
-          max: 100,
-          title: { display: true, text: "%", color: cssVar("--muted") },
-          ticks: { callback: (v) => v + "%" },
-          grid: { color: currentTheme() === "light" ? "rgba(28,25,21,0.08)" : "rgba(239,232,220,0.05)" },
+        donutCenter: {
+          text: donutItems.length ? mln(centerVal) : "—",
+          sub: donutItems.length ? centerSub : "",
         },
       },
     },
   });
-
-  const propTable = $("property-table");
-  if (propTable) propTable.innerHTML = "";
 }
 
 function ledgerRowData(ledger) {

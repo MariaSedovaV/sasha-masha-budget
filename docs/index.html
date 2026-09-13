@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz-no-font.min.css" />
-  <link rel="stylesheet" href="static/styles.css?v=63" />
+  <link rel="stylesheet" href="static/styles.css?v=83" />
   <script>
     document.documentElement.dataset.theme = localStorage.getItem("sasha-theme") || "dark";
   </script>
@@ -139,44 +139,33 @@
         </section>
 
         <aside class="share-side">
-          <section class="panel">
-            <h2>Состав сейчас</h2>
-            <div class="chart-box share-donut">
-              <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
-                <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
-                <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-              </button>
-              <canvas id="chart-savings"></canvas>
+          <section class="panel compose-panel">
+            <div class="panel-head compose-head">
+              <div>
+                <h2 id="compose-title">Состав сейчас</h2>
+                <p class="hint" id="compose-hint">без тайской квартиры до 2029</p>
+              </div>
             </div>
-            <div id="cash-from-sasha" class="share-table"></div>
-          </section>
-          <section class="panel">
-            <h2>Доли недвижимости</h2>
-            <div id="share-prop-kpis"></div>
-            <div class="chart-box share-chart">
-              <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
-                <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
-                <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-              </button>
-              <canvas id="chart-property"></canvas>
+            <div class="compose-toolbar">
+              <label class="compose-year-lab">Год
+                <select id="compose-year" aria-label="Год состава"></select>
+              </label>
+              <label class="toggle-pill"><input type="checkbox" id="compose-encumbrance" /> Учет обременения</label>
             </div>
+            <div class="compose-body">
+              <div class="chart-box share-donut">
+                <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+                  <svg class="icon-expand" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 3.5H4.5v4M15.5 3.5h4v4M8.5 20.5H4.5v-4M15.5 20.5h4v-4"/></svg>
+                  <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
+                <canvas id="chart-savings"></canvas>
+              </div>
+              <div class="compose-legend" id="compose-legend"></div>
+            </div>
+            <div class="compose-enc-note" id="compose-enc-note" hidden></div>
           </section>
         </aside>
       </div>
-
-      <section class="panel share-notes">
-        <h2>Допущения и источники</h2>
-        <div class="share-notes-grid">
-          <div>
-            <h3 class="notes-col-title">Допущения</h3>
-            <ul id="share-assumptions"></ul>
-          </div>
-          <div>
-            <h3 class="notes-col-title">Источники</h3>
-            <ul id="share-sources"></ul>
-          </div>
-        </div>
-      </section>
     </section>
 
     <section id="view-data" class="view data-view hidden">
@@ -210,9 +199,25 @@
     </section>
   </div>
   <div class="fcf-backdrop hidden" id="fcf-backdrop" hidden></div>
+  <div class="share-modal" id="assumptions-modal" hidden>
+    <div class="share-modal-card" role="dialog" aria-modal="true" aria-labelledby="assumptions-modal-title">
+      <button type="button" class="share-modal-close" id="assumptions-modal-close" aria-label="Закрыть">×</button>
+      <h2 id="assumptions-modal-title">Допущения и источники</h2>
+      <div class="share-notes-grid">
+        <div>
+          <h3 class="notes-col-title">Допущения</h3>
+          <ul id="share-assumptions"></ul>
+        </div>
+        <div>
+          <h3 class="notes-col-title">Источники</h3>
+          <ul id="share-sources"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.noStyle.js"></script>
   <script src="static/sync.js?v=57"></script>
-  <script src="static/app.js?v=63"></script>
+  <script src="static/app.js?v=83"></script>
   <script src="https://mariasedovav.github.io/sasha-masha/voice-mic.js?v=1"></script>
   <script>
     try { localStorage.removeItem("sasha-butler-gemini"); } catch (e) {}

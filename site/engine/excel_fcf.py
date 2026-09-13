@@ -126,7 +126,7 @@ def _fact_col(month: int) -> int:
 
 
 @lru_cache(maxsize=8)
-def _workbook(path_str: str, data_only: bool = True):
+def _workbook(path_str: str, data_only: bool = True, mtime: float = 0.0):
     return openpyxl.load_workbook(path_str, data_only=data_only)
 
 
@@ -135,7 +135,7 @@ def _wb(path: Path | None = None, data_only: bool = True):
     if not excel or not excel.exists():
         return None, None
     try:
-        return _workbook(str(excel.resolve()), data_only), excel
+        return _workbook(str(excel.resolve()), data_only, excel.stat().st_mtime), excel
     except Exception:
         return None, excel
 
@@ -413,10 +413,10 @@ class _ExcelEval:
 
 
 def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict | None:
-    """Помесячные остатки: формулы строк 14–18 FCF 2026 ФАКТ (кумулятив), затем план.
+    """Помесячные остатки: старт (кол. B) + сумма месячных потоков, не ниже нуля.
 
-    Строки 14–18 в Excel — бегущий итог = старт + потоки слева направо
-    (у Маши в августе ещё минус парковка). data_only часто пустой — считаем формулы.
+    Потоки — строки 19–21 и 23 FCF 2026 ФАКТ (сен–дек часто тянут план), с 2027 — FCF ПЛАН.
+    Не берём строки баланса 14–16 как есть: у Маши в августе там повторно вычитается парковка.
     """
     closed = max(0, min(12, int(closed_month or 0)))
     formulas_wb, excel = _wb(path, data_only=False)
@@ -427,8 +427,8 @@ def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict
         formulas_wb,
         values_wb or formulas_wb,
         force_formula={
-            FACT_SHEET: {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 49, 50},
-            PLAN_SHEET: {14, 15, 16, 17, 18},
+            FACT_SHEET: {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 49, 50, 54},
+            PLAN_SHEET: {14, 15, 16, 17, 18, 49},
         },
     )
 
@@ -466,14 +466,82 @@ def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict
             out[(year, month)] = plan_flow(plan_row, year, month)
         return out
 
-    masha = path_from_balance(FACT_MASHA_BAL_ROW, PLAN_MASHA_ROW)
-    sasha_sav = path_from_balance(FACT_SASHA_BAL_ROW, PLAN_SASHA_ROW)
-    sasha_inv_nominal = path_from_balance(FACT_SASHA_INV_BAL_ROW, PLAN_SASHA_INV_ROW)
-    cash = path_from_balance(FACT_CASH_BAL_ROW, PLAN_CASH_ROW)
+    def path_from_flows(start: float, flows: dict[tuple[int, int], float], extras: dict[tuple[int, int], float] | None = None) -> dict[tuple[int, int], float]:
+        extras = extras or {}
+        value = float(start or 0.0)
+        out: dict[tuple[int, int], float] = {(2025, 12): max(0.0, value)}
+        for year, month in _iter_ym((BASE_YEAR, 1), (PLAN_END_YEAR, 12)):
+            value += float(flows.get((year, month), 0.0) or 0.0)
+            value += float(extras.get((year, month), 0.0) or 0.0)
+            value = max(0.0, value)
+            out[(year, month)] = value
+        return out
+
+    def fact_balance_extras(bal_row: int) -> dict[tuple[int, int], float]:
+        """Константы вроде +11137 в формулах кумулятива FACT (свободные деньги)."""
+        extras: dict[tuple[int, int], float] = {}
+        try:
+            ws = formulas_wb[FACT_SHEET]
+        except KeyError:
+            return extras
+        for month in range(1, 13):
+            raw = ws.cell(bal_row, _fact_col(month)).value
+            if not isinstance(raw, str) or not raw.startswith("="):
+                continue
+            extra = 0.0
+            for num in re.findall(r"(?<![A-Za-z])\+(\d+(?:\.\d+)?)", raw):
+                extra += float(num)
+            if extra:
+                extras[(BASE_YEAR, month)] = extra
+        return extras
+
     masha_flows = flows_2026(FACT_MASHA_FLOW_ROW, PLAN_MASHA_ROW)
     sasha_flows = flows_2026(FACT_SASHA_FLOW_ROW, PLAN_SASHA_ROW)
     cash_flows = flows_2026(FACT_CASH_FLOW_ROW, PLAN_CASH_ROW)
     inv_flows = flows_2026(FACT_SASHA_INV_FLOW_ROW, PLAN_SASHA_INV_ROW)
+
+    formula_extras = fact_balance_extras(FACT_MASHA_BAL_ROW)
+    leftover_extras: dict[tuple[int, int], float] = {}
+    fcf_month: dict[tuple[int, int], float] = {}
+    for month in range(1, 13):
+        fcf_month[(BASE_YEAR, month)] = fact_flow(FACT_TOTAL_ROW, month)
+    for year, month in _iter_ym((BASE_YEAR + 1, 1), (PLAN_END_YEAR, 12)):
+        fcf_month[(year, month)] = plan_flow(PLAN_TOTAL_ROW, year, month)
+    # С закрытого месяца: нераспределённый FCF (то, что не ушло в Сашу/наличные/ОФЗ) — в Машу.
+    for year, month in _iter_ym((BASE_YEAR, 1), (PLAN_END_YEAR, 12)):
+        if (year, month) <= (BASE_YEAR, closed or 0):
+            continue
+        parked = (
+            max(0.0, float(masha_flows.get((year, month), 0.0) or 0.0))
+            + max(0.0, float(sasha_flows.get((year, month), 0.0) or 0.0))
+            + max(0.0, float(cash_flows.get((year, month), 0.0) or 0.0))
+            + max(0.0, float(inv_flows.get((year, month), 0.0) or 0.0))
+        )
+        leftover = float(fcf_month.get((year, month), 0.0) or 0.0) - parked
+        if leftover > 0.5:
+            leftover_extras[(year, month)] = leftover
+
+    masha_extras: dict[tuple[int, int], float] = {}
+    for year, month in _iter_ym((BASE_YEAR, 1), (PLAN_END_YEAR, 12)):
+        if (year, month) <= (BASE_YEAR, closed or 0):
+            extra = float(formula_extras.get((year, month), 0.0) or 0.0)
+        else:
+            extra = float(leftover_extras.get((year, month), 0.0) or 0.0)
+        if extra:
+            masha_extras[(year, month)] = extra
+
+    masha = path_from_flows(
+        fact_start(FACT_MASHA_BAL_ROW),
+        masha_flows,
+        masha_extras,
+    )
+    sasha_sav = path_from_flows(fact_start(FACT_SASHA_BAL_ROW), sasha_flows)
+    cash = path_from_flows(
+        fact_start(FACT_CASH_BAL_ROW),
+        cash_flows,
+        fact_balance_extras(FACT_CASH_BAL_ROW),
+    )
+    sasha_inv_nominal = path_from_balance(FACT_SASHA_INV_BAL_ROW, PLAN_SASHA_INV_ROW)
     return {
         "masha": masha,
         "sasha_savings": sasha_sav,
@@ -487,7 +555,7 @@ def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict
         "sasha_invest_start": fact_start(FACT_SASHA_INV_BAL_ROW),
         "excel": excel.name if excel else None,
         "closed_month": closed,
-        "method": "excel_formulas_cumulative",
+        "method": "start_plus_flows_floor",
     }
 
 
@@ -510,8 +578,42 @@ def read_savings_balances(closed_month: int, path: Path | None = None) -> dict |
         "cash": at("cash"),
         "excel": paths.get("excel"),
         "closed_month": closed,
-        "method": "excel_formulas_cumulative",
+        "method": "start_plus_flows_floor",
     }
+
+
+PLAN_MORTGAGE_ROW = 20
+PLAN_THAI_ROW = 23
+ENCUMBRANCE_THAI_UNTIL = (2028, 12)
+ENCUMBRANCE_MORTGAGE_UNTIL = (2030, 12)
+
+
+def read_encumbrance_schedule(path: Path | None = None) -> list[dict]:
+    """Будущие платежи по Таиланду (до 2028) и ипотеке (до 2030) из FCF ПЛАН."""
+    formulas_wb, _excel = _wb(path, data_only=False)
+    values_wb, _ = _wb(path, data_only=True)
+    if not formulas_wb or PLAN_SHEET not in formulas_wb.sheetnames:
+        return []
+    ev = _ExcelEval(
+        formulas_wb,
+        values_wb or formulas_wb,
+        force_formula={PLAN_SHEET: {PLAN_MORTGAGE_ROW, PLAN_THAI_ROW}},
+    )
+    out = []
+    for year, month in _iter_ym((BASE_YEAR, 1), ENCUMBRANCE_MORTGAGE_UNTIL):
+        thai = 0.0
+        if (year, month) <= ENCUMBRANCE_THAI_UNTIL:
+            thai = ev.cell(PLAN_SHEET, PLAN_THAI_ROW, _plan_col(year, month))
+        mort = ev.cell(PLAN_SHEET, PLAN_MORTGAGE_ROW, _plan_col(year, month))
+        if abs(thai) < 0.5 and abs(mort) < 0.5:
+            continue
+        out.append({
+            "year": year,
+            "month": month,
+            "thai": max(0.0, float(thai or 0.0)),
+            "mortgage": max(0.0, float(mort or 0.0)),
+        })
+    return out
 
 
 NS_MAIN = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
