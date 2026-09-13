@@ -291,7 +291,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
   }
 
 
-  const BRAIN_V = "3";
+  const BRAIN_V = "4";
   const MIC_V = "1";
   function familySrc(file, ver) {
     const host = location.hostname;
