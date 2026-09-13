@@ -124,7 +124,7 @@ function mln(n) {
   return (n / 1e6).toFixed(2).replace(".", ",") + " млн";
 }
 
-const SNAPSHOT_VER = "61";
+const SNAPSHOT_VER = "63";
 let txGridApi = null;
 let ledgerGridApi = null;
 let txGridQuiet = false;
@@ -1090,6 +1090,60 @@ function paintChart(id, config) {
   const ctx = $(id);
   if (!ctx) return;
   charts[id] = new Chart(ctx, config);
+}
+
+function viewportTier() {
+  const w = window.innerWidth;
+  if (w <= 860) return "phone";
+  if (w <= 1180) return "tablet";
+  return "desktop";
+}
+
+function ensureSliceTooltipPositioner() {
+  if (!window.Chart || !Chart.Tooltip || !Chart.Tooltip.positioners) return;
+  if (Chart.Tooltip.positioners.sliceLow) return;
+  Chart.Tooltip.positioners.sliceLow = function(items) {
+    if (!items || !items.length) return false;
+    const { chartArea } = this.chart;
+    if (!chartArea) return false;
+    const el = items[0].element || {};
+    const x = Number.isFinite(el.x) ? el.x : (chartArea.left + chartArea.right) / 2;
+    const tier = viewportTier();
+    const inset = tier === "phone" ? 6 : tier === "tablet" ? 8 : 10;
+    return {
+      x: Math.max(chartArea.left + 18, Math.min(chartArea.right - 18, x)),
+      y: chartArea.bottom - inset,
+    };
+  };
+}
+
+function sliceTooltipChrome(extra = {}) {
+  ensureSliceTooltipPositioner();
+  const tier = viewportTier();
+  const phone = tier === "phone";
+  const light = currentTheme() === "light";
+  return {
+    enabled: true,
+    position: "sliceLow",
+    yAlign: "top",
+    xAlign: "center",
+    caretSize: 4,
+    caretPadding: 0,
+    padding: phone ? 8 : 10,
+    boxPadding: phone ? 3 : 4,
+    bodySpacing: phone ? 2 : 3,
+    titleMarginBottom: phone ? 4 : 6,
+    bodyFont: { size: phone ? 11 : 12, family: "Montserrat, sans-serif" },
+    titleFont: { size: phone ? 11 : 12, weight: "600", family: "Montserrat, sans-serif" },
+    backgroundColor: light ? "rgba(255, 250, 242, 0.94)" : "rgba(17, 19, 24, 0.92)",
+    titleColor: cssVar("--ink") || "#efe8dc",
+    bodyColor: cssVar("--ink") || "#efe8dc",
+    borderColor: cssVar("--line") || "rgba(239,232,220,0.12)",
+    borderWidth: 1,
+    cornerRadius: 10,
+    displayColors: extra.displayColors !== false,
+    ...extra,
+  };
 }
 
 function chartInteraction() {
@@ -2510,8 +2564,7 @@ function paintSlice() {
     return parsedY;
   };
 
-  const sliceTooltip = () => ({
-    enabled: true,
+  const sliceTooltip = () => sliceTooltipChrome({
     filter: (item) => item.raw != null,
     callbacks: {
       label: (ctx) => {
@@ -2550,7 +2603,7 @@ function paintSlice() {
   const flowChartOpts = (extra = {}) => ({
     maintainAspectRatio: false,
     interaction: extra.interaction || { mode: "index", intersect: false },
-    layout: { padding: { right: extra.basketLimit != null ? 28 : 8 } },
+    layout: { padding: { right: extra.basketLimit != null ? 28 : 8, bottom: viewportTier() === "phone" ? 4 : 2 } },
     plugins: {
       legend: extra.hideLegend
         ? { display: false }
@@ -2722,10 +2775,11 @@ function paintSlice() {
       basketLimitLabel: String(limit),
       interaction: chartInteraction(),
       tooltip: {
-        enabled: true,
-        mode: "nearest",
-        intersect: true,
-        displayColors: false,
+        ...sliceTooltipChrome({
+          displayColors: false,
+          mode: "nearest",
+          intersect: true,
+        }),
         filter: (item) => {
           const ds = item.dataset || (item.chart && item.chart.data && item.chart.data.datasets[item.datasetIndex]);
           return !!(ds && ds.cat && item.raw != null && Math.abs(Number(item.raw)) > 0.05);
