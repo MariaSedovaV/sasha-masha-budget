@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:ital,wght@0,400;0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.min.css" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz-no-font.min.css" />
-  <link rel="stylesheet" href="static/styles.css?v=52" />
+  <link rel="stylesheet" href="static/styles.css?v=57" />
   <script>
     document.documentElement.dataset.theme = localStorage.getItem("sasha-theme") || "dark";
   </script>
@@ -24,6 +24,7 @@
         <span class="brand-rest"><span class="brand-sep">|</span> <span class="brand-page">Мониторинг бюджета</span></span>
       </div>
       <div class="chrome-actions">
+        <div class="stamp" id="data-stamp" title="Время последнего обновления из Excel или сохранения факта"></div>
         <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Переключить тему">Светлая</button>
         <a class="home-link" href="https://mariasedovav.github.io/sasha-masha/" aria-label="На главную">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 11.2 12 4.8l7.5 6.4V20a1 1 0 0 1-1 1h-5.2v-6.2H10.7V21H5.5a1 1 0 0 1-1-1v-8.8Z"/></svg>
@@ -32,7 +33,6 @@
     </header>
     <div class="subbar">
       <div class="ticker ticker-compact" id="markets" aria-label="Курсы и золото"></div>
-      <div class="stamp" id="data-stamp" title="Время последнего обновления из Excel или сохранения факта"></div>
       <nav class="tabs">
         <button class="tab active" data-view="analytics">Аналитика</button>
         <button class="tab" data-view="share">Стоимость активов</button>
@@ -65,15 +65,17 @@
           <div class="panel-head">
             <div>
               <h2>Факт против плана</h2>
-              <p class="hint">без фильтров — доходы и расходы · с фильтрами — выбранные статьи</p>
+              <p class="hint">ряды включаются фильтрами · без выбранных фильтров график пуст</p>
             </div>
-            <div class="view-toggle" id="slice-mode">
-              <button type="button" class="ghost" id="btn-slice-detail" aria-pressed="false">Детализация</button>
-              <button type="button" class="ghost" id="btn-reset-filters">Сбросить</button>
+            <div class="slice-toolbar" id="slice-mode">
+              <div class="view-toggle">
+                <button type="button" class="ghost" id="btn-slice-detail" aria-pressed="false">Детализация</button>
+                <button type="button" class="ghost" id="btn-reset-filters">Сбросить</button>
+              </div>
+              <div class="filters" id="filters" aria-label="Группы фильтров"></div>
             </div>
           </div>
           <div class="filter-shell">
-            <div class="filters" id="filters" aria-label="Группы фильтров"></div>
             <div class="filter-nest hidden" id="filter-nest"></div>
           </div>
           <div class="chart-box">
@@ -83,6 +85,7 @@
             </button>
             <canvas id="chart-slice"></canvas>
           </div>
+          <div class="slice-legend" id="slice-legend" hidden></div>
         </section>
 
         <aside class="side">
@@ -124,6 +127,7 @@
               <svg class="icon-collapse" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
             <canvas id="chart-assets"></canvas>
+            <div class="chart-hover" id="asset-hover" hidden></div>
           </div>
           <div class="chart-box share-chart-sm hidden" id="drivers-wrap">
             <button type="button" class="chart-expand" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
@@ -207,9 +211,20 @@
   </div>
   <div class="fcf-backdrop hidden" id="fcf-backdrop" hidden></div>
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.noStyle.js"></script>
-  <script src="static/sync.js?v=52"></script>
-  <script src="static/app.js?v=52"></script>
+  <script src="static/sync.js?v=57"></script>
+  <script src="static/app.js?v=57"></script>
   <script src="https://mariasedovav.github.io/sasha-masha/voice-mic.js?v=1"></script>
-  <script src="static/assistant.js?v=55"></script>
+  <script>
+    try { localStorage.removeItem("sasha-butler-gemini"); } catch (e) {}
+    (function () {
+      function wipe() {
+        document.querySelectorAll("#assist-key,#assist-key-row,#assist-key-hint,.assist-key,.assist-key-row,.assist-key-hint").forEach(function (n) { n.remove(); });
+      }
+      wipe();
+      document.addEventListener("DOMContentLoaded", wipe);
+      new MutationObserver(wipe).observe(document.documentElement, { childList: true, subtree: true });
+    })();
+  </script>
+  <script src="static/assistant.js?v=56"></script>
 </body>
 </html>

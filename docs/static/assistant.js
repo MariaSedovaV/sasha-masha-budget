@@ -257,12 +257,21 @@
   .assist-mic,.assist-form button[type=submit]{min-height:44px}
 }
 html.assist-open,html.assist-open body{overflow:hidden}
+#assist-key,#assist-key-row,#assist-key-hint,.assist-key,.assist-key-row,.assist-key-hint{display:none!important}
 `;
     document.head.appendChild(s);
   }
 
+  function stripKeyUi() {
+    document.querySelectorAll("#assist-key, #assist-key-row, #assist-key-hint, .assist-key, .assist-key-row, .assist-key-hint").forEach((el) => el.remove());
+    try { localStorage.removeItem("sasha-butler-gemini"); } catch {}
+  }
   function injectDom() {
-    if (document.getElementById("assist-panel")) return;
+    stripKeyUi();
+    document.getElementById("assist-panel")?.remove();
+    document.getElementById("assist-open")?.closest(".assist-dock")?.remove();
+    document.getElementById("assist-open")?.remove();
+    document.getElementById("assist-to-top")?.remove();
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <button type="button" class="assist-fab" id="assist-open">Дворецкий</button>
@@ -291,7 +300,7 @@ html.assist-open,html.assist-open body{overflow:hidden}
   }
 
 
-  const BRAIN_V = "4";
+  const BRAIN_V = "5";
   const MIC_V = "1";
   function familySrc(file, ver) {
     const host = location.hostname;
@@ -308,12 +317,15 @@ html.assist-open,html.assist-open body{overflow:hidden}
     return familySrc("butler-brain.js", BRAIN_V);
   }
   function loadBrain() {
-    if (window.SashaButler) return Promise.resolve(window.SashaButler);
     return new Promise((resolve) => {
       const s = document.createElement("script");
       s.src = brainSrc();
-      s.onload = () => resolve(window.SashaButler || null);
-      s.onerror = () => resolve(null);
+      s.onload = () => {
+        try { if (window.SashaButler) window.SashaButler.attach = stripKeyUi; } catch {}
+        stripKeyUi();
+        resolve(window.SashaButler || null);
+      };
+      s.onerror = () => resolve(window.SashaButler || null);
       document.head.appendChild(s);
     });
   }
@@ -340,6 +352,8 @@ html.assist-open,html.assist-open body{overflow:hidden}
   }
 
   function bootAssistant() {
+    if (window.__sashaAssistReady) return;
+    window.__sashaAssistReady = true;
     injectCss();
     injectDom();
     const panel = document.getElementById("assist-panel");
@@ -350,7 +364,9 @@ html.assist-open,html.assist-open body{overflow:hidden}
     const openBtn = document.getElementById("assist-open");
     const closeBtn = document.getElementById("assist-close");
     if (!panel || !form) return;
-    loadBrain().then((brain) => brain?.attach?.());
+    stripKeyUi();
+    new MutationObserver(stripKeyUi).observe(panel, { childList: true, subtree: true });
+    loadBrain();
     loadMic();
 
     function fitSheet() {
@@ -368,22 +384,40 @@ html.assist-open,html.assist-open body{overflow:hidden}
     window.visualViewport?.addEventListener("scroll", fitSheet);
     window.addEventListener("resize", fitSheet);
 
+    let lastBot = { at: 0, text: "" };
     function addMsg(role, text) {
+      const t = String(text || "").trim();
+      if (!t) return;
+      if (role === "bot") {
+        const now = Date.now();
+        const prev = lastBot.text;
+        if (now - lastBot.at < 3000 && prev && (t === prev || t.slice(0, 28) === prev.slice(0, 28))) return;
+        lastBot = { at: now, text: t };
+      }
       const el = document.createElement("div");
       el.className = "assist-msg " + role;
-      el.textContent = text;
+      el.textContent = t;
       log.appendChild(el);
       log.scrollTop = log.scrollHeight;
     }
 
+    let assistBusy = false;
     async function run(text, fromVoice) {
-      addMsg("user", text);
+      const q = String(text || "").trim();
+      if (!q || assistBusy) return;
+      assistBusy = true;
+      addMsg("user", q);
       const thinking = document.createElement("div");
       thinking.className = "assist-msg bot";
       thinking.textContent = "Думаю…";
       log.appendChild(thinking);
-      const res = await resolveCommand(text);
-      thinking.remove();
+      let res = { say: "Не расслышала." };
+      try {
+        res = await resolveCommand(q) || res;
+      } finally {
+        thinking.remove();
+        assistBusy = false;
+      }
       addMsg("bot", res.say);
       if (fromVoice) speak(res.say);
       if (res.theme) document.getElementById("theme-toggle")?.click();
@@ -412,8 +446,8 @@ html.assist-open,html.assist-open body{overflow:hidden}
       openBtn.classList.add("hidden");
       if (!log.childElementCount) {
         loadBrain().then((brain) => {
-          brain?.attach?.();
-          addMsg("bot", brain?.greeting?.() || "Привет. Могу открыть разделы, добавить дело Саше или Маше и записать трату в категорию этого месяца. Зажмите кнопку и говорите — или напишите.");
+          stripKeyUi();
+          addMsg("bot", brain?.greeting?.() || "Привет. Спросите своими словами — погоду, дело, трату или что завтра.");
         });
       }
       fitSheet();
