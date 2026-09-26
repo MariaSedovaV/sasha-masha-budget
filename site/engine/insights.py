@@ -526,27 +526,48 @@ def build_insights(
 
     conclusions = []
 
-    # 1. Запас ликвидности к сентябрьскому платежу Таиланда (ещё не в закрытых месяцах)
-    thai_sep_plan = _sum(rows_y, [9], ["Квартира Тайланд"], "plan")
-    if closed < 9 and thai_sep_plan >= 500_000:
-        cover = fact_closed / thai_sep_plan if thai_sep_plan else 0
-        conclusions.append(
-            {
-                "tone": "warn" if cover < 1.2 else "info",
-                "title": "Следующий платёж Таиланда — конец сентября",
-                "text": (
-                    f"В плане на сентябрь {_mln(thai_sep_plan)}; в факте до августа ещё не проведён. "
-                    f"Текущий кумулятив FCF {_mln(fact_closed)} "
-                    f"{'покрывает платёж с запасом' if cover >= 1.2 else 'почти вровень с платежом — держать кассу отдельно'} "
-                    f"(×{cover:.1f})."
-                ),
-            }
+    # 1. Ближайший крупный план после закрытого месяца (расход или отрицательный доход)
+    nxt = _upcoming_cash(rows_y, closed)
+    if nxt:
+        cover = fact_closed / nxt["amount"] if nxt["amount"] else 0
+        when = _month_name(nxt["month"])
+        liquid = (
+            f"Текущий кумулятив FCF {_mln(fact_closed)} "
+            f"{'покрывает с запасом' if cover >= 1.2 else 'почти вровень — держать сумму отдельно'} "
+            f"(×{cover:.1f})."
         )
+        if nxt["kind"] == "expense":
+            conclusions.append(
+                {
+                    "tone": "warn" if cover < 1.2 else "info",
+                    "title": f"Следующий крупный платёж — конец {when}",
+                    "text": (
+                        f"В плане «{nxt['category']}» {_mln(nxt['amount'])}; в закрытом факте ещё нет. "
+                        + liquid
+                    ),
+                }
+            )
+        else:
+            conclusions.append(
+                {
+                    "tone": "warn" if cover < 1.2 else "info",
+                    "title": f"В плане отток {_mln(nxt['amount'])} — конец {when}",
+                    "text": (
+                        f"Статья «{nxt['category']}»: −{_mln(nxt['amount'])}, в факте ещё нет. "
+                        + liquid
+                    ),
+                }
+            )
 
     # 2. Где факт сильнее/слабее плана (не общий delta, а драйвер)
     overs = [c for c in cat_rows if c["delta"] > 50_000]
     unders = [c for c in cat_rows if c["delta"] < -50_000]
-    if overs:
+    rest_plan = _sum(rows_y, ytd, ["Рестораны"], "plan")
+    rest_year_hit = rest_fact > RESTAURANT_YEAR_LIMIT
+    basket_story = _basket_story(rows_y, ytd, basket_months)
+    # Отдельная карточка «главный перерасход — рестораны» повторяет годовой лимит.
+    skip_rest_over = rest_year_hit and bool(overs) and overs[0]["category"] == "Рестораны"
+    if overs and not skip_rest_over:
         top = overs[0]
         conclusions.append(
             {
@@ -558,7 +579,7 @@ def build_insights(
                 ),
             }
         )
-    elif unders:
+    elif unders and not overs:
         top = unders[0]
         conclusions.append(
             {
@@ -577,7 +598,7 @@ def build_insights(
                 "tone": "good",
                 "title": f"Запас к плану FCF: +{_tys(delta)}",
                 "text": (
-                    f"Кумулятив на {_month_name(closed)}: факт {_mln(fact_closed)} vs план {_mln(plan_closed)}. "
+                    f"Кумулятив на конец {_month_name(closed)}: факт {_mln(fact_closed)} vs план {_mln(plan_closed)}. "
                     "Метрика из строк КУМУЛЯТИВНЫЙ ИТОГ Excel (без займов в ИТОГО)."
                 ),
             }
@@ -630,7 +651,10 @@ def build_insights(
 
     failed = [b for b in basket_months if b["fact"] > BASKET_LIMIT]
     if failed:
-        names = ", ".join(_month_name(b["month"]) for b in failed[:4])
+        shown = failed if len(failed) <= 8 else failed[:6]
+        names = ", ".join(_month_name(b["month"]) for b in shown)
+        if len(failed) > len(shown):
+            names += f" и ещё {len(failed) - len(shown)}"
         worst = max(failed, key=lambda b: b["fact"])
         conclusions.append(
             {
@@ -653,15 +677,14 @@ def build_insights(
 
     if rest_fact > RESTAURANT_YEAR_LIMIT:
         left_m = max(1, 12 - closed)
-        burn = rest_fact / max(1, closed)
         conclusions.append(
             {
                 "tone": "bad",
                 "title": "Рестораны: лимит года уже исчерпан",
                 "text": (
-                    f"{_tys(rest_fact)} при потолке {_tys(RESTAURANT_YEAR_LIMIT)}. "
-                    f"Средний темп ~{_tys(burn)}/мес. — на оставшиеся {left_m} мес. "
-                    "имеет смысл жёсткий потолок или перенос встреч домой."
+                    f"Факт {_tys(rest_fact)} при плане {_tys(rest_plan)} "
+                    f"и потолке {_tys(RESTAURANT_YEAR_LIMIT)}. "
+                    f"На оставшиеся {left_m} мес. — только исключения, иначе корзина снова уедет."
                 ),
             }
         )
@@ -678,7 +701,15 @@ def build_insights(
             }
         )
 
-    # trim to 5 most useful
+    # Горизонт до 2040 уже на графике: при нехватке места уступает ближайшим сигналам
+    while len(conclusions) > 5:
+        horizon_i = next(
+            (i for i, c in enumerate(conclusions) if str(c.get("title", "")).startswith("План FCF:")),
+            None,
+        )
+        if horizon_i is None:
+            break
+        conclusions.pop(horizon_i)
     conclusions = conclusions[:5]
 
     parking_fact = _sum(rows_y, ytd, ["Парковка"], "fact")
@@ -686,19 +717,42 @@ def build_insights(
     net_worth = fact_closed + thailand_fact + parking_fact
 
     recs = []
-    if closed < 9 and thai_sep_plan >= 500_000:
+    if nxt:
+        when = _month_name(nxt["month"])
+        if nxt["kind"] == "expense":
+            recs.append(
+                {
+                    "n": f"{len(recs)+1:02d}",
+                    "tag": nxt["category"].lower()[:18],
+                    "title": f"Зарезервировать платёж на конец {when}",
+                    "text": (
+                        f"Выделить {_mln(nxt['amount'])} на «{nxt['category']}» до прочих трат — "
+                        "сумма ещё не в факте, но уже в плане."
+                    ),
+                }
+            )
+        else:
+            recs.append(
+                {
+                    "n": f"{len(recs)+1:02d}",
+                    "tag": "отток",
+                    "title": f"Не тратить отток конца {when}",
+                    "text": (
+                        f"По плану уходит {_mln(nxt['amount'])} («{nxt['category']}»). "
+                        "В кумулятиве это заложено, в факте ещё нет — не считать сумму свободной."
+                    ),
+                }
+            )
+    if basket_story["failed"]:
         recs.append(
             {
                 "n": f"{len(recs)+1:02d}",
-                "tag": "тайланд",
-                "title": "Зарезервировать сентябрьский платёж",
-                "text": (
-                    f"Выделить {_mln(thai_sep_plan)} на конец сентября до прочих трат — "
-                    "платёж ещё не в факте, но уже в плане."
-                ),
+                "tag": "корзина",
+                "title": "Откуда берётся пробой корзины 230 тыс.",
+                "text": _basket_rec_text(basket_story),
             }
         )
-    if overs:
+    if overs and not (rest_fact > RESTAURANT_YEAR_LIMIT * 0.85 and overs[0]["category"] == "Рестораны"):
         top = overs[0]
         recs.append(
             {
@@ -716,9 +770,10 @@ def build_insights(
             {
                 "n": f"{len(recs)+1:02d}",
                 "tag": "рестораны",
-                "title": "Заморозить рестораны до нового лимита",
+                "title": "Рестораны: годовой лимит уже закрыт",
                 "text": (
-                    f"Уже {_tys(rest_fact)} при годе {_tys(RESTAURANT_YEAR_LIMIT)}. "
+                    f"Факт {_tys(rest_fact)} при плане {_tys(rest_plan)} "
+                    f"и годовом потолке {_tys(RESTAURANT_YEAR_LIMIT)}. "
                     "До января — только исключения с лимитом на месяц."
                 ),
             }
@@ -736,7 +791,19 @@ def build_insights(
             ),
         }
     )
-    if family_fact < FAMILY_GIFTS_YEAR_LIMIT * 0.5 and len(recs) < 4:
+    if family_fact > FAMILY_GIFTS_YEAR_LIMIT:
+        recs.append(
+            {
+                "n": f"{len(recs)+1:02d}",
+                "tag": "семья",
+                "title": "Подарки семьям: лимит года превышен",
+                "text": (
+                    f"Уже {_tys(family_fact)} при потолке {_tys(FAMILY_GIFTS_YEAR_LIMIT)}. "
+                    "До января новые траты по этой статье лучше не планировать."
+                ),
+            }
+        )
+    elif family_fact < FAMILY_GIFTS_YEAR_LIMIT * 0.5 and len(recs) < 4:
         recs.append(
             {
                 "n": f"{len(recs)+1:02d}",
@@ -815,6 +882,117 @@ def build_insights(
         "filter_groups": filter_groups,
         "filter_tree": filter_tree,
     }
+
+
+def _upcoming_cash(rows_y, closed: int) -> dict | None:
+    """Ближайший после закрытого месяца крупный план: расход или отрицательный доход."""
+    found = []
+    for month in range(int(closed) + 1, 13):
+        for cat in EXPENSE_CATEGORIES:
+            amt = _sum(rows_y, [month], [cat], "plan")
+            if amt >= 500_000:
+                found.append({"month": month, "category": cat, "amount": amt, "kind": "expense"})
+        for cat in INCOME_CATEGORIES:
+            amt = _sum(rows_y, [month], [cat], "plan")
+            if amt <= -500_000:
+                found.append(
+                    {"month": month, "category": cat, "amount": abs(amt), "kind": "outflow"}
+                )
+    if not found:
+        return None
+    found.sort(key=lambda x: (x["month"], -x["amount"]))
+    return found[0]
+
+
+def _basket_story(rows_y, ytd, basket_months) -> dict:
+    """Почему корзина выше 230 тыс.: план уже выше потолка или факт ушёл от своего плана."""
+    failed = [b for b in basket_months if b["fact"] > BASKET_LIMIT]
+    plan_over = []
+    fact_over = []
+    for b in failed:
+        month = b["month"]
+        cats = []
+        for cat in BASKET_CATEGORIES:
+            fact = _sum(rows_y, [month], [cat], "fact")
+            plan = _sum(rows_y, [month], [cat], "plan")
+            cats.append({"category": cat, "fact": fact, "plan": plan, "delta": fact - plan})
+        item = {
+            **b,
+            "top_plan": max(cats, key=lambda c: c["plan"]),
+            "top_delta": max(cats, key=lambda c: c["delta"]),
+        }
+        if b["plan"] > BASKET_LIMIT:
+            plan_over.append(item)
+        else:
+            fact_over.append(item)
+    drivers = []
+    for cat in BASKET_CATEGORIES:
+        fact = _sum(rows_y, ytd, [cat], "fact")
+        plan = _sum(rows_y, ytd, [cat], "plan")
+        delta = fact - plan
+        if delta > 40_000:
+            drivers.append({"category": cat, "fact": fact, "plan": plan, "delta": delta})
+    drivers.sort(key=lambda c: c["delta"], reverse=True)
+    return {
+        "failed": failed,
+        "plan_over": plan_over,
+        "fact_over": fact_over,
+        "drivers": drivers[:3],
+    }
+
+
+def _driver_phrase(drivers: list) -> str:
+    bits = [f"«{d['category']}» +{_tys(d['delta'])}" for d in drivers]
+    if not bits:
+        return ""
+    if len(bits) == 1:
+        return bits[0]
+    return ", ".join(bits[:-1]) + " и " + bits[-1]
+
+
+def _basket_rec_text(story: dict) -> str:
+    parts = []
+    if story["plan_over"]:
+        bits = []
+        for b in story["plan_over"]:
+            top = b["top_plan"]
+            bits.append(
+                f"в {_month_in(b['month'])} «{top['category']}» {_tys(top['plan'])} уже в плане"
+            )
+        parts.append("Потолок пробит планом: " + "; ".join(bits) + ".")
+    if story["drivers"]:
+        parts.append(f"Сверх своего плана за закрытые месяцы сильнее всего {_driver_phrase(story['drivers'])}.")
+    spikes = sorted(story["fact_over"], key=lambda b: b["top_delta"]["delta"], reverse=True)[:2]
+    spike_bits = []
+    for b in spikes:
+        top = b["top_delta"]
+        if top["delta"] < 30_000:
+            continue
+        spike_bits.append(f"в {_month_in(b['month'])} «{top['category']}» {_tys(top['fact'])}")
+    if spike_bits:
+        parts.append("Крупные всплески факта: " + "; ".join(spike_bits) + ".")
+    if not parts:
+        return "Факт корзины выше 230 тыс. в части закрытых месяцев."
+    return " ".join(parts)
+
+
+def _month_in(m: int) -> str:
+    names = [
+        "",
+        "январе",
+        "феврале",
+        "марте",
+        "апреле",
+        "мае",
+        "июне",
+        "июле",
+        "августе",
+        "сентябре",
+        "октябре",
+        "ноябре",
+        "декабре",
+    ]
+    return names[m]
 
 
 def _month_name(m: int) -> str:
