@@ -27,10 +27,10 @@ PLAN_END_YEAR = 2040
 PLAN_SHEET = "FCF 2026 ПЛАН"
 FACT_SHEET = "FCF 2026 ФАКТ"
 
-PLAN_CUMUL_ROW = 51
-PLAN_TOTAL_ROW = 49
-FACT_CUMUL_ROW = 56
-FACT_TOTAL_ROW = 54
+PLAN_CUMUL_ROW = 52
+PLAN_TOTAL_ROW = 50
+FACT_CUMUL_ROW = 57
+FACT_TOTAL_ROW = 55
 # Балансы и месячные потоки накоплений на ФАКТ
 FACT_MASHA_BAL_ROW = 14
 FACT_SASHA_BAL_ROW = 15
@@ -427,8 +427,8 @@ def read_savings_month_ends(closed_month: int, path: Path | None = None) -> dict
         formulas_wb,
         values_wb or formulas_wb,
         force_formula={
-            FACT_SHEET: {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 49, 50, 54},
-            PLAN_SHEET: {14, 15, 16, 17, 18, 49},
+            FACT_SHEET: {14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 50, 51, 55},
+            PLAN_SHEET: {14, 15, 16, 17, 18, 50},
         },
     )
 

@@ -30,6 +30,7 @@ RULES: list[tuple[str, str, int]] = [
     (r"ivi\.ru|mirazh|мираж|qtickets|кино|музей|muze|ledovyy|боулинг|"
      r"сервисы яндекса|netmonet|a\.paywall", "Развлечения", 88),
     (r"фитнес|fitnes|bushido|абонемент", "Абонемент в спорт-зал", 88),
+    (r"покупка машин|автомобил", "Машина", 90),
     (r"beauty|стрижк|маникюр|zakanail|zielinski", "Бьюти процедуры", 88),
     (r"apteka|аптека|поликлиник|мед\.|medis|профме", "Прочее", 80),
     (r"mts|мтс|mbank\.mts|lgs esim|мобильн", "Мобильная связь", 90),

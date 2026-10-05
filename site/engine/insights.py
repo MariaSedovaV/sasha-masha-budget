@@ -169,7 +169,7 @@ def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_
             mortgage_plan_by_ym[key] = mortgage_plan_by_ym.get(key, 0) + r["plan"]
         if r["category"] == "Парковка":
             parking_plan_by_ym[key] = parking_plan_by_ym.get(key, 0) + r["plan"]
-        if r["category"] in ("Парковка", "Крупные покупки", "Отпуска"):
+        if r["category"] in ("Парковка", "Крупные покупки", "Отпуска", "Машина"):
             large_plan_by_ym[key] = large_plan_by_ym.get(key, 0) + r["plan"]
 
     # Fallback, если Excel недоступен: наращиваем кумулятив по ИТОГО-логике
@@ -272,7 +272,7 @@ def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_
         if large >= 500_000 and th < 1_000_000 and not parking_named:
             large_cat = "Крупные покупки"
             large_amt = 0.0
-            for cat in ("Парковка", "Крупные покупки", "Отпуска"):
+            for cat in ("Парковка", "Крупные покупки", "Отпуска", "Машина"):
                 amt = sum(
                     r["plan"] for r in rows
                     if r.get("year", BASE_YEAR) == year and r["month"] == month and r["category"] == cat
@@ -283,8 +283,8 @@ def _build_fcf_horizon(rows, closed: int, fact_until: int | None = None, stored_
             events.append(
                 {
                     "index": i,
-                    "label": "Крупный расход",
-                    "detail": f"{large / 1e3:.0f} тыс. план",
+                    "label": "Покупка машины" if large_cat == "Машина" else "Крупный расход",
+                    "detail": f"{large_amt / 1e3:.0f} тыс. план",
                     "tone": "rose",
                     "value": series_plan[-1],
                     "category": large_cat,
@@ -527,7 +527,8 @@ def build_insights(
     conclusions = []
 
     # 1. Ближайший крупный план после закрытого месяца (расход или отрицательный доход)
-    nxt = _upcoming_cash(rows_y, closed)
+    nxt_all = _upcoming_cash(rows_y, closed)
+    nxt = nxt_all[0] if nxt_all else None
     if nxt:
         cover = fact_closed / nxt["amount"] if nxt["amount"] else 0
         when = _month_name(nxt["month"])
@@ -544,6 +545,7 @@ def build_insights(
                     "text": (
                         f"В плане «{nxt['category']}» {_mln(nxt['amount'])}; в закрытом факте ещё нет. "
                         + liquid
+                        + _cash_also(nxt_all)
                     ),
                 }
             )
@@ -555,6 +557,7 @@ def build_insights(
                     "text": (
                         f"Статья «{nxt['category']}»: −{_mln(nxt['amount'])}, в факте ещё нет. "
                         + liquid
+                        + _cash_also(nxt_all)
                     ),
                 }
             )
@@ -728,6 +731,7 @@ def build_insights(
                     "text": (
                         f"Выделить {_mln(nxt['amount'])} на «{nxt['category']}» до прочих трат — "
                         "сумма ещё не в факте, но уже в плане."
+                        + _cash_also(nxt_all)
                     ),
                 }
             )
@@ -740,6 +744,7 @@ def build_insights(
                     "text": (
                         f"По плану уходит {_mln(nxt['amount'])} («{nxt['category']}»). "
                         "В кумулятиве это заложено, в факте ещё нет — не считать сумму свободной."
+                        + _cash_also(nxt_all)
                     ),
                 }
             )
@@ -884,8 +889,8 @@ def build_insights(
     }
 
 
-def _upcoming_cash(rows_y, closed: int) -> dict | None:
-    """Ближайший после закрытого месяца крупный план: расход или отрицательный доход."""
+def _upcoming_cash(rows_y, closed: int) -> list[dict]:
+    """Крупные планы ближайшего месяца после закрытого: расход или отрицательный доход."""
     found = []
     for month in range(int(closed) + 1, 13):
         for cat in EXPENSE_CATEGORIES:
@@ -899,9 +904,23 @@ def _upcoming_cash(rows_y, closed: int) -> dict | None:
                     {"month": month, "category": cat, "amount": abs(amt), "kind": "outflow"}
                 )
     if not found:
-        return None
+        return []
     found.sort(key=lambda x: (x["month"], -x["amount"]))
-    return found[0]
+    month = found[0]["month"]
+    return [item for item in found if item["month"] == month]
+
+
+def _cash_also(items: list[dict]) -> str:
+    rest = items[1:]
+    if not rest:
+        return ""
+    bits = []
+    for item in rest:
+        if item["kind"] == "outflow":
+            bits.append(f"«{item['category']}» −{_mln(item['amount'])}")
+        else:
+            bits.append(f"«{item['category']}» {_mln(item['amount'])}")
+    return " В том же месяце ещё " + "; ".join(bits) + "."
 
 
 def _basket_story(rows_y, ytd, basket_months) -> dict:
