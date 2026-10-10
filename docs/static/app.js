@@ -221,7 +221,7 @@ function applyLedgerGridLayout(api) {
   api.setGridOption("rowHeight", compact ? 36 : 44);
   api.setGridOption("headerHeight", compact ? 32 : 36);
   if (typeof api.setColumnWidth === "function") {
-    api.setColumnWidth("category", compact ? 120 : 180, true);
+    api.setColumnWidth("category", compact ? 156 : 180, true);
     for (let i = 1; i <= 12; i += 1) api.setColumnWidth("m" + i, compact ? 104 : 108, true);
   }
 }
@@ -1221,7 +1221,8 @@ function xAxisMonthQuarter(labels) {
   const light = currentTheme() === "light";
   const month = light ? "rgba(28,25,21,0.05)" : "rgba(239,232,220,0.035)";
   const quarter = light ? "rgba(28,25,21,0.09)" : "rgba(239,232,220,0.06)";
-  const dense = (labels || []).length > 18;
+  const n = (labels || []).length;
+  const dense = n > 18;
   return {
     grid: {
       color: (ctx) => {
@@ -1235,6 +1236,7 @@ function xAxisMonthQuarter(labels) {
     ticks: {
       maxRotation: 0,
       autoSkip: false,
+      font: { size: 10 },
       callback: (val, i) => {
         const lab = labels[i];
         if (lab == null) return "";
@@ -1242,6 +1244,7 @@ function xAxisMonthQuarter(labels) {
           const m = Number(String(lab).split(".")[0]);
           return m === 1 ? lab : "";
         }
+        if (viewportTier() === "phone" && n > 8 && i % 2 !== 0) return "";
         return lab;
       },
     },

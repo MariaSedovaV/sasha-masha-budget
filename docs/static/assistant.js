@@ -533,6 +533,8 @@ html.assist-open,html.assist-open body{overflow:hidden}
     mic.addEventListener("pointercancel", (e) => { e.preventDefault(); stopListen(); });
   }
 
+  const ASSISTANT_ENABLED = false;
+  if (!ASSISTANT_ENABLED) return;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootAssistant);
   else bootAssistant();
 })();
