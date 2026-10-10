@@ -1,6 +1,6 @@
 """Динамика активов: ликвидность из FCF 2026 ФАКТ + недвижимость по рынку.
 
-- Золото: 100 г с апреля 2025 × учётная цена ЦБ
+- Золото: 100 г с апреля 2025 по сентябрь 2026 × учётная цена ЦБ, дальше продано
 - Наличные, накопления Маша/Саша: старт + помесячные потоки FCF 2026 ФАКТ, не ниже нуля
 - Саша инвестиции: отдельно, ОФЗ с оценкой по YTM до октября 2026; с ноября ряд скрыт
 - Петербург: квартира 18,5 млн с мая 2024 (котлован), ключи сен 2026; паркинг отдельно
@@ -33,6 +33,7 @@ THAI_BUY = 20_922_179.0  # контракт / старт строительст�
 THAI_FROM = (2026, 3)
 THAI_KEYS = (2028, 9)  # ключи Q3 2028, полная оплата
 GOLD_FROM = (2025, 4)
+GOLD_UNTIL = (2026, 9)  # слиток продан в сентябре, с октября в активах нет
 CASH_FROM = (2025, 12)
 MASHA_FROM = (2025, 12)
 SASHA_FROM = (2025, 12)
@@ -181,7 +182,7 @@ def liquid_from_ledger(rows: list[dict], closed_month: int, gold_price: float) -
         cumul = START_CAPITAL + sum(_month_net_core(rows, m, "fact") for m in ytd)
 
     balances = read_savings_balances(closed_month)
-    gold = GOLD_GRAMS * gold_price
+    gold = 0.0 if closed_month > GOLD_UNTIL[1] else GOLD_GRAMS * gold_price
     if balances:
         masha = max(0.0, float(balances["masha"] or 0.0))
         sasha = max(0.0, float(balances["sasha"] or 0.0))
@@ -239,6 +240,43 @@ def _ym_key(year: int, month: int) -> int:
 
 def _at_or_after(year: int, month: int, start: tuple[int, int]) -> bool:
     return (year, month) >= start
+
+
+def _month_note(ym: tuple[int, int]) -> str:
+    names = (
+        "",
+        "январь",
+        "февраль",
+        "март",
+        "апрель",
+        "май",
+        "июнь",
+        "июль",
+        "август",
+        "сентябрь",
+        "октябрь",
+        "ноябрь",
+        "декабрь",
+    )
+    return f"{names[ym[1]]} {ym[0]}"
+
+
+def _car_purchase(rows: list[dict]) -> dict | None:
+    """Первая фактическая покупка в статье «Машина» — цена из Excel, без переоценки."""
+    hits = []
+    for r in rows:
+        if r.get("category") != "Машина":
+            continue
+        if int(r.get("year") or 2026) != 2026:
+            continue
+        fact = float(r.get("fact") or 0)
+        if fact < 100_000 or r.get("source") == "forecast":
+            continue
+        hits.append((int(r["month"]), fact))
+    if not hits:
+        return None
+    month, cost = min(hits, key=lambda item: item[0])
+    return {"from": (2026, month), "cost": cost}
 
 
 def _year_end_at(table: dict[int, float], year: int, month: int) -> float:
@@ -384,13 +422,15 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         return phuket_market_at(year, month)
 
     def gold_at(year: int, month: int) -> float | None:
-        if not _at_or_after(year, month, GOLD_FROM):
+        if not _at_or_after(year, month, GOLD_FROM) or (year, month) > GOLD_UNTIL:
             return None
         if (year, month) == closed:
             return GOLD_GRAMS * float(gold_px[2026])
         return GOLD_GRAMS * _year_end_at(gold_px, year, month)
 
-    cash_s, masha_s, sasha_s, ofz_s, gold_s, spb_s, park_s, phuket_s = [], [], [], [], [], [], [], []
+    car = _car_purchase(rows)
+
+    cash_s, masha_s, sasha_s, ofz_s, gold_s, car_s, spb_s, park_s, phuket_s = [], [], [], [], [], [], [], [], []
     for year, month in months:
         cash_s.append(_liquid_at(savings_paths.get("cash"), year, month, CASH_FROM, liq["cash"]))
         masha_s.append(_liquid_at(savings_paths.get("masha"), year, month, MASHA_FROM, liq["masha"]))
@@ -405,6 +445,10 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         )
         ofz_s.append(_liquid_at(ofz_path, year, month, SASHA_INV_FROM, ofz_start))
         gold_s.append(gold_at(year, month))
+        if car and _at_or_after(year, month, car["from"]):
+            car_s.append(car["cost"])
+        else:
+            car_s.append(None)
         spb_s.append(spb_apt_at(year, month))
         park_s.append(spb_park_at(year, month))
         phuket_s.append(phuket_equity_at(year, month))
@@ -465,7 +509,23 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
             "from_year": GOLD_FROM[0],
             "from_month": GOLD_FROM[1],
             "series": rnd_series(gold_s),
-            "note": f"покупка апрель 2025 · {GOLD_GRAMS:.0f} г × {gold_px[2026]:,.0f} ₽/г",
+            "note": (
+                f"покупка апрель 2025 · продажа сентябрь 2026 · "
+                f"{GOLD_GRAMS:.0f} г × {gold_px[2026]:,.0f} ₽/г"
+            ),
+        },
+        {
+            "id": "car",
+            "label": "Geely Monjaro",
+            "kind": "property",
+            "from_year": car["from"][0] if car else 2026,
+            "from_month": car["from"][1] if car else 10,
+            "series": rnd_series(car_s),
+            "note": (
+                f"покупка {_month_note(car['from'])} · {car['cost']/1e6:.2f} млн ₽ · статья «Машина»"
+                if car
+                else "покупка не найдена в FCF"
+            ),
         },
         {
             "id": "spb",
@@ -651,6 +711,7 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
                 "sasha": current["sasha"],
                 "sasha_invest": current.get("sasha_invest") or 0,
                 "gold": current["gold"],
+                "car": current.get("car") or 0,
                 "spb": current["spb"],
                 "parking": current.get("parking") or 0,
                 "phuket": 0,
@@ -659,7 +720,14 @@ def build_asset_timeline(rows: list[dict], closed_month: int = 7, markets: dict 
         "composition": composition,
         "encumbrance_schedule": enc_sched,
         "assumptions": [
-            f"Золото: куплено в апреле 2025, {GOLD_GRAMS:.0f} г × цена ЦБ на закрытый месяц ({gold_px[2026]:,.0f} ₽/г).",
+            (
+                f"Золото: куплено в апреле 2025, {GOLD_GRAMS:.0f} г × цена ЦБ. "
+                f"Последний месяц на графиках — сентябрь 2026, дальше слиток продан."
+            ),
+            (
+                f"Geely Monjaro: с октября 2026 по цене покупки "
+                f"{(car['cost']/1e6 if car else 0):.2f} млн ₽ из статьи «Машина»."
+            ),
             "Наличные («Доллары дома»), накопления Маша и Саша: старт 2026 плюс помесячные потоки строк FCF 2026 ФАКТ. Остаток не ниже нуля. С прогноза (после закрытого месяца) нераспределённый FCF месяца — в накопления Маша. С 2027 — потоки FCF ПЛАН плюс тот же остаток.",
             (
                 f"Саша инвестиции — отдельно: ОФЗ, старт {ofz_start/1e6:.2f} млн ₽. "
